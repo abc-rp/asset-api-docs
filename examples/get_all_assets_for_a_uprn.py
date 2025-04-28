@@ -1,13 +1,18 @@
-from rdflib import Graph
 import os
 import httpx
 import re
+from rdflib.plugins.stores.sparqlstore import SPARQLStore
+from rdflib.query import ResultRow
 
-# Path to your directory of .ttl files
-TTL_DIR = "examples/turtles/"
+# Connect to the SPARQL endpoint (ensuring all the .ttl files are loaded into the triplestore)
+DB_URL = "http://100.64.153.8:3030/mytriplestore/query"
+endpoint = SPARQLStore(query_endpoint=DB_URL, returnFormat="json")
+
 # Directory to save downloaded assets
-DOWNLOAD_DIR = "examples/downloads"
+here = os.path.dirname(os.path.abspath(__file__))
+DOWNLOAD_DIR = os.path.join(here, "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
 
 # Define the query
 UPRN = "5045394"
@@ -17,17 +22,19 @@ PREFIX dob: <https://w3id.org/dob/voc#>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 PREFIX sosa: <http://www.w3.org/ns/sosa/>
 PREFIX so: <http://schema.org/>
-PREFIX bot: <https://w3id.org/bot#>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
 
 SELECT DISTINCT ?contentUrl
 WHERE {{
-  ?result a dob:Result ;
-            sosa:hasFeatureOfInterest ?zone ;
+  ?result a sosa:Result ;
             so:contentUrl ?contentUrl .
-  ?zone a bot:Zone, sosa:FeatureOfInterest ;
-        so:identifier ?uprn .
-  ?uprn a dob:UPRNValue ;
-        so:value ?uprnValue .
+  ?observation a sosa:Observation ;
+            sosa:hasResult ?result ;
+            sosa:hasFeatureOfInterest ?foi .
+  ?foi a sosa:FeatureOfInterest ;
+            so:identifier ?uprn .
+   ?uprn a dob:UPRNValue ;
+           so:value ?uprnValue .
   FILTER(?uprnValue = {UPRN})
 }}"""
 
@@ -37,20 +44,8 @@ if not API_KEY:
         "API_KEY environment variable is not set. Please set it to your API key."
     )
 
-# Create a new graph (using Oxigraph as a store to make things fast)
-g = Graph(store="Oxigraph", bind_namespaces="core")
-
-# Iterate over files in the directory to load the turtle files
-for filename in os.listdir(TTL_DIR):
-    if filename.endswith(".ttl"):
-        file_path = os.path.join(TTL_DIR, filename)
-        print(f"Loading {file_path}...")
-        g.parse(file_path, format="ox-ttl")
-
-print(f"Graph loaded with {len(g)} triples.")
-
 # Run the query
-results = g.query(QUERY)
+results = endpoint.query(QUERY)
 
 
 # A simple synchronous fetch function
@@ -83,6 +78,8 @@ def download_asset(url):
 
 try:
     for row in results:
+        if not isinstance(row, ResultRow):
+            continue
         url = row["contentUrl"]
         print(f"Downloading {url}...")
         download_asset(url)
