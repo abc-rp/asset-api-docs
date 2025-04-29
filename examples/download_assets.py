@@ -79,41 +79,57 @@ PREFIX prov:  <http://www.w3.org/ns/prov#>
 PREFIX bess:  <https://w3id.org/bess/voc#>
 """
     select = "SELECT DISTINCT ?uprnValue ?contentUrl\n"
-    where = ["  ?res so:contentUrl ?contentUrl ."]
-    if args.types:
-        where.append("  ?res dob:typeQualifier ?enum .")
+    where = [
+        "  ?res so:contentUrl ?contentUrl .",
+        # walk back to the Observation
+        "  ?res ( ^sosa:hasResult | ^prov:generated / prov:used )* ?obs .",
+        # drill into the feature of interest
+        "  ?obs sosa:hasFeatureOfInterest ?foi .",
+        # get the identifier node and ensure it's a dob:UPRNValue
+        "  ?foi so:identifier ?ident .",
+        "  ?ident a dob:UPRNValue ;",
+        "         so:value  ?uprnValue .",
+    ]
+
+    # sensor filter if requested
     if args.sensor:
-        where += [
-            "  ?res ( ^sosa:hasResult | ^prov:generated / prov:used )* ?obs .",
-            f"  ?obs a {args.sensor} .",
-            "  ?obs sosa:hasFeatureOfInterest/so:identifier/so:value ?uprnValue .",
-        ]
-    else:
-        where.append(
-            "  ?res ( ^sosa:hasResult | ^prov:generated / prov:used )*"
-            " / sosa:hasFeatureOfInterest/so:identifier/so:value ?uprnValue ."
-        )
+        where.insert(1, f"  ?obs a {args.sensor} .")
+
+    # asset‐type qualifier if requested
+    if args.types:
+        where.insert(1, "  ?res dob:typeQualifier ?enum .")
+
+    # restrict to the given UPRNs
     quoted = ", ".join(f'"{u}"' for u in uprn_list)
     where.append(f"  FILTER(str(?uprnValue) IN ({quoted}))")
+
+    # typeQualifier filter
     if args.types:
         where.append(f"  FILTER(?enum IN ({args.types}))")
+
     return prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}\n"
+
 
 def build_output_area_query(area_list):
     prefixes = """
-PREFIX spr:   <http://statistics.data.gov.uk/def/spatialrelations/>
-PREFIX so:    <http://schema.org/>
-PREFIX sosa:  <http://www.w3.org/ns/sosa/>
-PREFIX bot:   <https://w3id.org/bot/voc#>
-PREFIX sid:   <http://statistics.data.gov.uk/id/statistical-geography/> 
+PREFIX spr: <http://statistics.data.gov.uk/def/spatialrelations/>
+PREFIX so:  <http://schema.org/>
+PREFIX dob: <https://w3id.org/dob/voc#>
+PREFIX sid: <http://statistics.data.gov.uk/id/statistical-geography/>
 """
     select = "SELECT DISTINCT ?outputArea ?uprnValue\n"
     where = [
-        "  VALUES ?outputArea { " + " ".join(area_list) + " } .",
-        "  ?zone spr:within ?outputArea .",
-        "  ?zone so:identifier/so:value ?uprnValue ."
+        # restrict to the output areas
+        "VALUES ?outputArea { " + " ".join(area_list) + " } .",
+        # pull zones in them
+        "?zone spr:within ?outputArea .",
+        # get only identifiers of type dob:UPRNValue
+        "?zone so:identifier ?ident .",
+        "?ident a dob:UPRNValue ; so:value ?uprnValue ."
     ]
-    return prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}\n"
+    body = "WHERE {\n  " + "\n  ".join(where) + "\n}\n"
+    return prefixes + select + body
+
 
 def download_asset(url: str, save_dir: str, api_key: str):
     try:
