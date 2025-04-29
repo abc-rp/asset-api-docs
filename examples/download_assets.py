@@ -15,16 +15,12 @@ def parse_args():
     parser.add_argument(
         "--uprn",
         nargs="+",
-        help="One or more UPRNs (space- or comma-separated), e.g. --uprn 12345 67890"
+        help="One or more UPRNs or a CSV path (column 'uprn'), e.g. --uprn 12345 67890 or --uprn uprns.csv"
     )
     parser.add_argument(
         "--ods",
         nargs="+",
-        help="One or more ODS codes (space- or comma-separated), e.g. --ods 00LAA 01BBB"
-    )
-    parser.add_argument(
-        "--csv",
-        help="Path to a CSV file containing a column 'uprn' with UPRN values"
+        help="One or more ODS codes or a CSV path (column 'ods'), e.g. --ods 00LAA or --ods ods.csv"
     )
     parser.add_argument(
         "--sensor",
@@ -38,7 +34,7 @@ def parse_args():
         "--output-area", "--oa",
         dest="output_area",
         nargs="+",
-        help="One or more output-area IRIs, e.g. sid:E00032882"
+        help="One or more output-area IRIs or a CSV path (column 'output_area'), e.g. --output-area sid:E00032882 or --output-area areas.csv"
     )
     parser.add_argument(
         "--db-url",
@@ -57,17 +53,17 @@ def parse_args():
     )
     return parser.parse_args()
 
-def load_uprns_from_csv(path):
-    uprns = []
-    with open(path, newline="") as csvfile:
-        reader = csv.DictReader(csvfile)
-        if 'uprn' not in reader.fieldnames:
-            raise RuntimeError(f"CSV {path!r} missing required 'uprn' column")
+def load_column_from_csv(path, column):
+    values = []
+    with open(path, newline="") as cf:
+        reader = csv.DictReader(cf)
+        if column not in reader.fieldnames:
+            raise RuntimeError(f"CSV {path!r} missing required '{column}' column")
         for row in reader:
-            val = row['uprn'].strip()
-            if val:
-                uprns.append(val)
-    return uprns
+            v = row[column].strip()
+            if v:
+                values.append(v)
+    return values
 
 def build_asset_query(uprn_list, args):
     prefixes = """
@@ -151,7 +147,10 @@ def main():
     if args.ods:
         ods_list = []
         for entry in args.ods:
-            ods_list.extend(o.strip() for o in entry.split(",") if o.strip())
+            if os.path.isfile(entry) and entry.lower().endswith('.csv'):
+                ods_list.extend(load_column_from_csv(entry, 'ods'))
+            else:
+                ods_list.extend(o.strip() for o in entry.split(',') if o.strip())
         ods_list = list(dict.fromkeys(ods_list))
 
         store = SPARQLStore(query_endpoint=args.db_url, returnFormat="json")
@@ -164,16 +163,17 @@ def main():
             writer = csv.writer(cf)
             writer.writerow(["ods", "uprn"])
             for row in res:
-                ods = str(row["odsValue"])
-                uprn = str(row["uprnValue"])
-                writer.writerow([ods, uprn])
+                writer.writerow([row["odsValue"], row["uprnValue"]])
         print(f"✔ Saved ODS→UPRN CSV → {out_csv}")
 
     # --- OUTPUT-AREA MODE ---
     if args.output_area:
         areas = []
         for entry in args.output_area:
-            areas.extend(a.strip() for a in entry.split(",") if a.strip())
+            if os.path.isfile(entry) and entry.lower().endswith('.csv'):
+                areas.extend(load_column_from_csv(entry, 'output_area'))
+            else:
+                areas.extend(a.strip() for a in entry.split(',') if a.strip())
         formatted = [
             f"<{a}>" if a.startswith("http://") or a.startswith("https://") else a
             for a in areas
@@ -185,9 +185,7 @@ def main():
 
         grouping = {}
         for row in res:
-            oa = str(row["outputArea"])
-            uv = str(row["uprnValue"])
-            grouping.setdefault(oa, []).append(uv)
+            grouping.setdefault(row["outputArea"], []).append(row["uprnValue"])
 
         for oa, uprns in grouping.items():
             name = oa.split("/")[-1]
@@ -203,9 +201,10 @@ def main():
     uprn_list = []
     if args.uprn:
         for entry in args.uprn:
-            uprn_list.extend(u.strip() for u in entry.split(",") if u.strip())
-    if args.csv:
-        uprn_list.extend(load_uprns_from_csv(args.csv))
+            if os.path.isfile(entry) and entry.lower().endswith('.csv'):
+                uprn_list.extend(load_column_from_csv(entry, 'uprn'))
+            else:
+                uprn_list.extend(u.strip() for u in entry.split(',') if u.strip())
     uprn_list = list(dict.fromkeys(uprn_list))
 
     if uprn_list:
