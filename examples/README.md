@@ -98,42 +98,42 @@ This unified script replaces and extends the above utilities by allowing you to:
 
 ```bash
 # Single UPRN
-python download_assets.py --uprn 5045394
+python3 download_assets.py --uprn 5045394
 
 # Multiple UPRNs (space-separated)
-python download_assets.py --uprn 200003455212 5045394
+python3 download_assets.py --uprn 200003455212 5045394
 
 # Multiple UPRNs (comma-separated)
-python download_assets.py --uprn 123,456,789
+python3 download_assets.py --uprn 123,456,789
 
 # CSV-only
-python download_assets.py --csv path/to/uprns.csv
+python3 download_assets.py --csv path/to/uprns.csv
 
 # Mixed UPRN and CSV
-python download_assets.py --uprn 123,456 --csv path/to/uprns.csv
+python3 download_assets.py --uprn 123,456 --csv path/to/uprns.csv
 
 # Sensor filter
-python download_assets.py --uprn 5045394 --sensor bess:OusterLidarSensor
+python3 download_assets.py --uprn 5045394 --sensor bess:OusterLidarSensor
 
 # Type filter
-python download_assets.py --uprn 5045394 --types did:rgb-image,did:lidar-pointcloud-merged
+python3 download_assets.py --uprn 5045394 --types did:rgb-image,did:lidar-pointcloud-merged
 
 # Sensor + type
-python download_assets.py --uprn 5045394 --sensor bess:FlirA70Camera --types did:ir-count-image
+python3 download_assets.py --uprn 5045394 --sensor bess:FlirA70Camera --types did:ir-count-image
 
 # Custom SPARQL endpoint
-python download_assets.py --uprn 200003455212 --db-url http://myhost:3030/mytriplestore/query
+python3 download_assets.py --uprn 200003455212 --db-url http://myhost:3030/mytriplestore/query
 
 # Custom download directory
-python download_assets.py --uprn 5045394 --download-dir /data/assets
+python3 download_assets.py --uprn 5045394 --download-dir /data/assets
 
 # Custom API key env var
 export MY_KEY=...
-python download_assets.py --uprn 5045394 --api-key-env MY_KEY
+python3 download_assets.py --uprn 5045394 --api-key-env MY_KEY
 
 # All options combined
 export MY_KEY=...
-python download_assets.py \
+python3 download_assets.py \
   --uprn 200003455212,5045394 \
   --csv path/to/uprns.csv \
   --sensor bess:OusterLidarSensor \
