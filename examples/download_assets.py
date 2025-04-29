@@ -10,51 +10,50 @@ from rdflib.query import ResultRow
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Download assets or list UPRNs by output area from a DID triplestore."
+        description="Download assets, list UPRNs by output area, or map ODS→UPRN from a DID triplestore."
     )
     parser.add_argument(
         "--uprn",
         nargs="+",
-        help=(
-            "One or more UPRNs (space- or comma-separated), e.g.: "
-            "--uprn 12345 67890  or  --uprn 12345,67890"
-        ),
+        help="One or more UPRNs (space- or comma-separated), e.g. --uprn 12345 67890"
+    )
+    parser.add_argument(
+        "--ods",
+        nargs="+",
+        help="One or more ODS codes (space- or comma-separated), e.g. --ods 00LAA 01BBB"
     )
     parser.add_argument(
         "--csv",
-        help="Path to a CSV file containing a column 'uprn' with UPRN values",
+        help="Path to a CSV file containing a column 'uprn' with UPRN values"
     )
     parser.add_argument(
         "--sensor",
-        help="Sensor IRI to filter by sensor type, e.g. bess:OusterLidarSensor",
+        help="Sensor IRI, e.g. bess:OusterLidarSensor"
     )
     parser.add_argument(
         "--types",
-        help="Comma-separated list of asset type IRIs, e.g. did:rgb-image,did:lidar-pointcloud-merged",
+        help="Comma-separated list of asset type IRIs, e.g. did:rgb-image"
     )
     parser.add_argument(
         "--output-area", "--oa",
         dest="output_area",
         nargs="+",
-        help=(
-            "One or more output area IRIs (space- or comma-separated), "
-            "e.g. sid:E00032882 or sid:E00032882,sid:E00063193"
-        ),
+        help="One or more output-area IRIs, e.g. sid:E00032882"
     )
     parser.add_argument(
         "--db-url",
-        default="http://ec2-18-175-116-201.eu-west-2.compute.amazonaws.com:3030/didtriplestore/query", 
-        help="SPARQL endpoint URL",
+        default="http://100.64.153.8:3030/didtriplestore/query",
+        help="SPARQL endpoint URL"
     )
     parser.add_argument(
         "--download-dir",
         default=None,
-        help="Base directory for downloads (default: ./downloads)",
+        help="Base directory for downloads (default: ./downloads)"
     )
     parser.add_argument(
         "--api-key-env",
         default="API_KEY",
-        help="Environment variable name for the API key",
+        help="Environment variable name for the API key"
     )
     return parser.parse_args()
 
@@ -81,34 +80,20 @@ PREFIX bess:  <https://w3id.org/bess/voc#>
     select = "SELECT DISTINCT ?uprnValue ?contentUrl\n"
     where = [
         "  ?res so:contentUrl ?contentUrl .",
-        # walk back to the Observation
         "  ?res ( ^sosa:hasResult | ^prov:generated / prov:used )* ?obs .",
-        # drill into the feature of interest
         "  ?obs sosa:hasFeatureOfInterest ?foi .",
-        # get the identifier node and ensure it's a dob:UPRNValue
         "  ?foi so:identifier ?ident .",
-        "  ?ident a dob:UPRNValue ;",
-        "         so:value  ?uprnValue .",
+        "  ?ident a dob:UPRNValue ; so:value ?uprnValue .",
     ]
-
-    # sensor filter if requested
     if args.sensor:
         where.insert(1, f"  ?obs a {args.sensor} .")
-
-    # asset‐type qualifier if requested
     if args.types:
         where.insert(1, "  ?res dob:typeQualifier ?enum .")
-
-    # restrict to the given UPRNs
     quoted = ", ".join(f'"{u}"' for u in uprn_list)
     where.append(f"  FILTER(str(?uprnValue) IN ({quoted}))")
-
-    # typeQualifier filter
     if args.types:
         where.append(f"  FILTER(?enum IN ({args.types}))")
-
     return prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}\n"
-
 
 def build_output_area_query(area_list):
     prefixes = """
@@ -119,17 +104,28 @@ PREFIX sid: <http://statistics.data.gov.uk/id/statistical-geography/>
 """
     select = "SELECT DISTINCT ?outputArea ?uprnValue\n"
     where = [
-        # restrict to the output areas
-        "VALUES ?outputArea { " + " ".join(area_list) + " } .",
-        # pull zones in them
-        "?zone spr:within ?outputArea .",
-        # get only identifiers of type dob:UPRNValue
-        "?zone so:identifier ?ident .",
-        "?ident a dob:UPRNValue ; so:value ?uprnValue ."
+        "  VALUES ?outputArea { " + " ".join(area_list) + " } .",
+        "  ?zone spr:within ?outputArea .",
+        "  ?zone so:identifier ?ident .",
+        "  ?ident a dob:UPRNValue ; so:value ?uprnValue ."
     ]
-    body = "WHERE {\n  " + "\n  ".join(where) + "\n}\n"
-    return prefixes + select + body
+    return prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}\n"
 
+def build_ods_to_uprn_query(ods_list):
+    prefixes = """
+PREFIX dob: <https://w3id.org/dob/voc#>
+PREFIX so:  <http://schema.org/>
+"""
+    select = "SELECT DISTINCT ?odsValue ?uprnValue\n"
+    values = " ".join(f'"{o}"' for o in ods_list)
+    where = [
+        f"  VALUES ?odsValue {{ {values} }} .",
+        "  ?zone so:identifier ?identODS .",
+        "  ?identODS a dob:ODSValue ; so:value ?odsValue .",
+        "  ?zone so:identifier ?identUPRN .",
+        "  ?identUPRN a dob:UPRNValue ; so:value ?uprnValue ."
+    ]
+    return prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}\n"
 
 def download_asset(url: str, save_dir: str, api_key: str):
     try:
@@ -146,32 +142,42 @@ def download_asset(url: str, save_dir: str, api_key: str):
     except Exception as e:
         print(f"✖ Failed to download {url}: {e}")
 
-def local_name(iri):
-    # If it's a full IRI, take the segment after the last slash
-    if iri.startswith("http://") or iri.startswith("https://"):
-        return iri.rstrip("/").split("/")[-1]
-    # If it's a prefixed name, take the part after the colon
-    if ":" in iri:
-        return iri.split(":", 1)[1]
-    return iri
-
 def main():
     args = parse_args()
     download_base = args.download_dir or os.path.join(os.getcwd(), "downloads")
     os.makedirs(download_base, exist_ok=True)
 
+    # --- ODS→UPRN mapping mode ---
+    if args.ods:
+        ods_list = []
+        for entry in args.ods:
+            ods_list.extend(o.strip() for o in entry.split(",") if o.strip())
+        ods_list = list(dict.fromkeys(ods_list))
+
+        store = SPARQLStore(query_endpoint=args.db_url, returnFormat="json")
+        q = build_ods_to_uprn_query(ods_list)
+        print("SPARQL query for ODS→UPRN mapping:\n", q)
+        res = store.query(q)
+
+        out_csv = os.path.join(download_base, "ods_to_uprn.csv")
+        with open(out_csv, "w", newline="") as cf:
+            writer = csv.writer(cf)
+            writer.writerow(["ods", "uprn"])
+            for row in res:
+                ods = str(row["odsValue"])
+                uprn = str(row["uprnValue"])
+                writer.writerow([ods, uprn])
+        print(f"✔ Saved ODS→UPRN CSV → {out_csv}")
+
     # --- OUTPUT-AREA MODE ---
     if args.output_area:
         areas = []
         for entry in args.output_area:
-            parts = [a.strip() for a in entry.split(",") if a.strip()]
-            areas.extend(parts)
-        # Only wrap true IRIs in <>
+            areas.extend(a.strip() for a in entry.split(",") if a.strip())
         formatted = [
             f"<{a}>" if a.startswith("http://") or a.startswith("https://") else a
             for a in areas
         ]
-
         store = SPARQLStore(query_endpoint=args.db_url, returnFormat="json")
         q = build_output_area_query(formatted)
         print("SPARQL query for output areas:\n", q)
@@ -183,9 +189,8 @@ def main():
             uv = str(row["uprnValue"])
             grouping.setdefault(oa, []).append(uv)
 
-        # Write one CSV per output area, named by local name only
         for oa, uprns in grouping.items():
-            name = local_name(oa)
+            name = oa.split("/")[-1]
             out_csv = os.path.join(download_base, f"{name}.csv")
             with open(out_csv, "w", newline="") as cf:
                 writer = csv.writer(cf)
@@ -197,8 +202,8 @@ def main():
     # --- ASSET-DOWNLOAD MODE ---
     uprn_list = []
     if args.uprn:
-        for e in args.uprn:
-            uprn_list.extend(u.strip() for u in e.split(",") if u.strip())
+        for entry in args.uprn:
+            uprn_list.extend(u.strip() for u in entry.split(",") if u.strip())
     if args.csv:
         uprn_list.extend(load_uprns_from_csv(args.csv))
     uprn_list = list(dict.fromkeys(uprn_list))
