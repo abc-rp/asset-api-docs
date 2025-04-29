@@ -43,7 +43,7 @@ def parse_args():
     )
     parser.add_argument(
         "--db-url",
-        default="http://100.64.153.8:3030/didtriplestore/query",
+        default="http://ec2-18-175-116-201.eu-west-2.compute.amazonaws.com:3030/didtriplestore/query", 
         help="SPARQL endpoint URL",
     )
     parser.add_argument(
