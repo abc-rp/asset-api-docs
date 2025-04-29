@@ -1,4 +1,4 @@
-# Python examples 
+# Python examples
 
 This directory contains a few Python scripts that will load and provision the graph database with provided turtle (.ttl) files and execute queries against it. Some will also then use results from queries to download assets from the API.
 
@@ -6,7 +6,7 @@ This directory contains a few Python scripts that will load and provision the gr
 
 ### 1. Create a virtual environment
 
-```
+```bash
 cd examples
 python3 -m venv venv
 ```
@@ -14,29 +14,29 @@ python3 -m venv venv
 ### 2. Activate and install requirements
 
 **macOS/Linux**
-```
+```bash
 source venv/bin/activate
 ```
 
 **Windows (CMD)**
-```
+```bash
 venv\Scripts\activate.bat
 ```
 
 **Windows (PowerShell)**
-```
+```powershell
 venv\Scripts\Activate.ps1
 ```
 
 Install dependencies.
-```
+```bash
 pip install -r requirements.txt
 ```
 
 ### 3. Set your API key
 
 **Temporary (session only)**
-```
+```bash
 export API_KEY="your_api_key"
 ```
 
@@ -63,8 +63,8 @@ Unified script:
 
 This unified script replaces and extends the above utilities by allowing you to:
 
-- Specify a **single** UPRN (`--uprn`) or a **list** of UPRNs (`--uprns`).
-- Provide a **CSV file** with a column named `uprn` (`--csv`).
+- Specify one or more UPRNs via **`--uprn`** (space- or comma-separated).
+- OR provide a **CSV file** with a column named `uprn` via **`--csv`**.
 - Filter by **sensor** type (`--sensor`, e.g. `bess:OusterLidarSensor`).
 - Filter by **asset type** (`--types`, e.g. `did:rgb-image,did:lidar-pointcloud-merged`).
 - Override the **SPARQL endpoint** (`--db-url`).
@@ -97,17 +97,49 @@ This unified script replaces and extends the above utilities by allowing you to:
 #### Usage
 
 ```bash
+# Single UPRN
 ./download_assets.py --uprn 5045394
 
-./download_assets.py --uprns 200003455212,5045394
+# Multiple UPRNs (space-separated)
+./download_assets.py --uprn 200003455212 5045394
 
-./download_assets.py --csv path/to/uprns.csv --types did:rgb-image
+# Multiple UPRNs (comma-separated)
+./download_assets.py --uprn 123,456,789
 
-./download_assets.py --uprn 5045394 \
+# CSV-only
+./download_assets.py --csv path/to/uprns.csv
+
+# Mixed UPRN and CSV
+./download_assets.py --uprn 123,456 --csv path/to/uprns.csv
+
+# Sensor filter
+./download_assets.py --uprn 5045394 --sensor bess:OusterLidarSensor
+
+# Type filter
+./download_assets.py --uprn 5045394 --types did:rgb-image,did:lidar-pointcloud-merged
+
+# Sensor + type
+./download_assets.py --uprn 5045394 --sensor bess:FlirOryxCamera --types did:ir-count-image
+
+# Custom SPARQL endpoint
+./download_assets.py --uprn 200003455212 --db-url http://myhost:3030/mytriplestore/query
+
+# Custom download directory
+./download_assets.py --uprn 5045394 --download-dir /data/assets
+
+# Custom API key env var
+export MY_KEY=...
+./download_assets.py --uprn 5045394 --api-key-env MY_KEY
+
+# All options combined
+export MY_KEY=...
+./download_assets.py \
+  --uprn 200003455212,5045394 \
+  --csv path/to/uprns.csv \
   --sensor bess:OusterLidarSensor \
   --types did:lidar-pointcloud-merged \
   --db-url http://myhost:3030/mytriplestore/query \
-  --download-dir /data/assets \
+  --download-dir /mnt/data/downloads \
   --api-key-env MY_KEY
 ```
 
