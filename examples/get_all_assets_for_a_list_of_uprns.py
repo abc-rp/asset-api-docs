@@ -7,7 +7,7 @@ from rdflib.query import ResultRow
 # --- Configuration ---------------------------------------------------------
 
 # SPARQL endpoint
-DB_URL = "http://100.64.153.8:3030/mytriplestore/query"
+DB_URL = "http://100.64.153.8:3030/didtriplestore/query"
 endpoint = SPARQLStore(query_endpoint=DB_URL, returnFormat="json")
 
 # Base download directory
@@ -52,7 +52,7 @@ WHERE {{
 
 
 # Your API key from environment
-API_KEY = os.getenv("DID_API_KEY")
+API_KEY = os.getenv("API_KEY")
 if not API_KEY:
     raise ValueError(
         "API_KEY environment variable is not set. Please set it to your API key."

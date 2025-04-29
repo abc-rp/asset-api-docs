@@ -28,16 +28,10 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 # - IR temperature array: https://w3id.org/dob/id/ir-temperature-array
 # - IR counts: https://w3id.org/dob/id/ir-count-image
 # - RBG image: https://w3id.org/dob/id/rgb-image
-# If using prefixes you can write the above IRIs as dob:ENTITY
-# e.g. dob:lidar-pointcloud-merged
 
 # Which UPRNs and which enums (types) to pull
 UPRNs  = "200003455212, 5045394"
 TYPES  = "did:rgb-image, did:lidar-pointcloud-merged, did:ir-temperature-array"
-
-API_KEY = os.getenv("DID_API_KEY")
-if not API_KEY:
-    raise RuntimeError("DID_API_KEY environment variable is not set.")
 
 # --- SPARQL: find any resource with your enum & contentUrl, then crawl back to UPRN ---
 QUERY = f"""
@@ -72,6 +66,10 @@ WHERE {{
 }}
 """
 
+# Your API key from environment
+API_KEY = os.getenv("API_KEY")
+if not API_KEY:
+    raise RuntimeError("API_KEY environment variable is not set.")
 
 # --- Download helper -------------------------------------------------------
 

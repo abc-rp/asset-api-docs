@@ -4,84 +4,89 @@ import re
 from rdflib.plugins.stores.sparqlstore import SPARQLStore
 from rdflib.query import ResultRow
 
-# Connect to the SPARQL endpoint (ensuring all the .ttl files are loaded into the triplestore)
-DB_URL = "http://100.64.153.8:3030/mytriplestore/query"
+# --- Configuration ---------------------------------------------------------
+
+# SPARQL endpoint
+DB_URL = "http://100.64.153.8:3030/didtriplestore/query"
 endpoint = SPARQLStore(query_endpoint=DB_URL, returnFormat="json")
 
-# Directory to save downloaded assets
+# Base download directory
 here = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_DIR = os.path.join(here, "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-
-# Define the query
+# Query parameters
 UPRN = "5045394"
+
+# SPARQL query: return all asset URLs for the given UPRN
 QUERY = f"""
-# Get all assets (the content URL) for the UPRN "5045394"
-PREFIX dob: <https://w3id.org/dob/voc#>
-PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-PREFIX sosa: <http://www.w3.org/ns/sosa/>
-PREFIX so: <http://schema.org/>
-PREFIX owl: <http://www.w3.org/2002/07/owl#>
+PREFIX dob:   <https://w3id.org/dob/voc#>
+PREFIX rdfs:  <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX sosa:  <http://www.w3.org/ns/sosa/>
+PREFIX so:    <http://schema.org/>
+PREFIX owl:   <http://www.w3.org/2002/07/owl#>
 
 SELECT DISTINCT ?contentUrl
 WHERE {{
   ?result a sosa:Result ;
-            so:contentUrl ?contentUrl .
+          so:contentUrl ?contentUrl .
   ?observation a sosa:Observation ;
-            sosa:hasResult ?result ;
-            sosa:hasFeatureOfInterest ?foi .
+               sosa:hasResult ?result ;
+               sosa:hasFeatureOfInterest ?foi .
   ?foi a sosa:FeatureOfInterest ;
-            so:identifier ?uprn .
-   ?uprn a dob:UPRNValue ;
-           so:value ?uprnValue .
-  FILTER(?uprnValue = {UPRN})
-}}"""
+       so:identifier ?uprn .
+  ?uprn a dob:UPRNValue ;
+        so:value ?uprnValue .
+  FILTER(str(?uprnValue) = "{UPRN}")
+}}
+"""
 
+# Your API key from environment
 API_KEY = os.getenv("API_KEY")
 if not API_KEY:
     raise ValueError(
         "API_KEY environment variable is not set. Please set it to your API key."
     )
 
-# Run the query
-results = endpoint.query(QUERY)
+# --- Helper to download a single asset into a given folder ----------------
 
-
-# A simple synchronous fetch function
-def download_asset(url):
-    # You can parallelise this with asyncio but be careful with the number of concurrent requests
-    # so that you stay within the rate limits
+def download_asset(url: str, save_dir: str) -> None:
     try:
-        response = httpx.get(url, headers={"x-api-key": API_KEY})
-        response.raise_for_status()  # Raise an error for bad responses
+        resp = httpx.get(url, headers={"x-api-key": API_KEY})
+        resp.raise_for_status()
 
-        # Try to get the filename from the content-disposition header
-        content_disposition = response.headers.get("Content-Disposition")
-        filename = None
-        if content_disposition:
-            # Example: content-disposition: inline; filename="somefile.webp"
-            match = re.search(r'filename="(?P<filename>[^"]+)"', content_disposition)
-            if match:
-                filename = match.group("filename")
+        # Derive filename from Content-Disposition or fallback to URL basename
+        cd_header = resp.headers.get("Content-Disposition", "")
+        m = re.search(r'filename="([^"]+)"', cd_header)
+        filename = m.group(1) if m else os.path.basename(url)
 
-        # Use the last part of the URL as a fallback filename
-        if not filename:
-            filename = url.split("/")[-1]
+        os.makedirs(save_dir, exist_ok=True)
+        path = os.path.join(save_dir, filename)
 
-        save_path = os.path.join(DOWNLOAD_DIR, filename)
-        with open(save_path, "wb") as f:
-            f.write(response.content)
+        with open(path, "wb") as f:
+            f.write(resp.content)
+
+        print(f"✔ Saved {url} → {path}")
     except Exception as e:
-        print(f"Failed to download {url}: {e}")
+        print(f"✖ Failed to download {url}: {e}")
 
+# --- Main execution --------------------------------------------------------
 
-try:
+def main():
+    # Run the SPARQL query
+    results = endpoint.query(QUERY)
+
+    # Download each asset into the base download directory
     for row in results:
         if not isinstance(row, ResultRow):
             continue
-        url = row["contentUrl"]
-        print(f"Downloading {url}...")
-        download_asset(url)
-except Exception as e:
-    print(f"Query error: {e}")
+
+        content_url = str(row["contentUrl"])
+        print(f"⤷ Downloading {content_url} …")
+        download_asset(content_url, DOWNLOAD_DIR)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(f"Error: {e}")
