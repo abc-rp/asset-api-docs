@@ -143,4 +143,4 @@ python3 download_assets.py \
   --api-key-env MY_KEY
 ```
 
-Run `./download_assets.py -h` to see the full list of command-line options and examples.
+Run `python3 download_assets.py -h` to see the full list of command-line options and examples.
