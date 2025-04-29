@@ -98,42 +98,42 @@ This unified script replaces and extends the above utilities by allowing you to:
 
 ```bash
 # Single UPRN
-./download_assets.py --uprn 5045394
+python download_assets.py --uprn 5045394
 
 # Multiple UPRNs (space-separated)
-./download_assets.py --uprn 200003455212 5045394
+python download_assets.py --uprn 200003455212 5045394
 
 # Multiple UPRNs (comma-separated)
-./download_assets.py --uprn 123,456,789
+python download_assets.py --uprn 123,456,789
 
 # CSV-only
-./download_assets.py --csv path/to/uprns.csv
+python download_assets.py --csv path/to/uprns.csv
 
 # Mixed UPRN and CSV
-./download_assets.py --uprn 123,456 --csv path/to/uprns.csv
+python download_assets.py --uprn 123,456 --csv path/to/uprns.csv
 
 # Sensor filter
-./download_assets.py --uprn 5045394 --sensor bess:OusterLidarSensor
+python download_assets.py --uprn 5045394 --sensor bess:OusterLidarSensor
 
 # Type filter
-./download_assets.py --uprn 5045394 --types did:rgb-image,did:lidar-pointcloud-merged
+python download_assets.py --uprn 5045394 --types did:rgb-image,did:lidar-pointcloud-merged
 
 # Sensor + type
-./download_assets.py --uprn 5045394 --sensor bess:FlirA70Camera --types did:ir-count-image
+python download_assets.py --uprn 5045394 --sensor bess:FlirA70Camera --types did:ir-count-image
 
 # Custom SPARQL endpoint
-./download_assets.py --uprn 200003455212 --db-url http://myhost:3030/mytriplestore/query
+python download_assets.py --uprn 200003455212 --db-url http://myhost:3030/mytriplestore/query
 
 # Custom download directory
-./download_assets.py --uprn 5045394 --download-dir /data/assets
+python download_assets.py --uprn 5045394 --download-dir /data/assets
 
 # Custom API key env var
 export MY_KEY=...
-./download_assets.py --uprn 5045394 --api-key-env MY_KEY
+python download_assets.py --uprn 5045394 --api-key-env MY_KEY
 
 # All options combined
 export MY_KEY=...
-./download_assets.py \
+python download_assets.py \
   --uprn 200003455212,5045394 \
   --csv path/to/uprns.csv \
   --sensor bess:OusterLidarSensor \
