@@ -27,28 +27,29 @@ PREFIX prov:  <http://www.w3.org/ns/prov#>
 
 SELECT DISTINCT ?uprnValue ?contentUrl
 WHERE {{
-  # Link observations → result → featureOfInterest → UPRNValue
-  ?observation a sosa:Observation ;
-               sosa:hasResult ?result ;
-               sosa:hasFeatureOfInterest ?foi .
-  ?foi a sosa:FeatureOfInterest ;
-       so:identifier ?uprn .
-  ?uprn a dob:UPRNValue ;
-        so:value ?uprnValue .
-  FILTER(?uprnValue IN ({UPRNs}))
-  {{
-    ?result so:contentUrl ?contentUrl .
-  }}
-  UNION
-  {{
-    ?proc a dob:Processing ;
-          prov:used ?result ;
-          prov:generated ?derived .
-    ?derived a dob:DerivedResult ;
-             so:contentUrl ?contentUrl .
-  }}
+  # 1) Grab any resource (?res) carrying a contentUrl
+  ?res
+    so:contentUrl ?contentUrl .
+
+  # 2) Crawl back through:
+  #      – sosa:hasResult from an Observation
+  #      – prov:generated / prov:used chains from Processing → DerivedResult → Result
+  #    (including any number of chained DerivedResults)
+  ?res
+    (
+      ^sosa:hasResult
+      | ^prov:generated / prov:used
+    )*
+    / sosa:hasFeatureOfInterest
+    / so:identifier
+    / so:value
+    ?uprnValue .
+
+  # 3) Restrict to only the UPRNs you care about
+  FILTER (?uprnValue IN ({UPRNs}))
 }}
 """
+
 
 # Your API key from environment
 API_KEY = os.getenv("DID_API_KEY")
