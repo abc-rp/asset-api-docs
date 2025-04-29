@@ -119,7 +119,7 @@ This unified script replaces and extends the above utilities by allowing you to:
 ./download_assets.py --uprn 5045394 --types did:rgb-image,did:lidar-pointcloud-merged
 
 # Sensor + type
-./download_assets.py --uprn 5045394 --sensor bess:FlirOryxCamera --types did:ir-count-image
+./download_assets.py --uprn 5045394 --sensor bess:FlirA70Camera --types did:ir-count-image
 
 # Custom SPARQL endpoint
 ./download_assets.py --uprn 200003455212 --db-url http://myhost:3030/mytriplestore/query
