@@ -66,29 +66,20 @@ def load_column_from_csv(path, column):
 
 def build_asset_query(uprn_list, args):
     prefixes = """
-PREFIX did:   <https://w3id.org/dob/id/>
-PREFIX dob:   <https://w3id.org/dob/voc#>
-PREFIX so:    <http://schema.org/>
-PREFIX sosa:  <http://www.w3.org/ns/sosa/>
-PREFIX prov:  <http://www.w3.org/ns/prov#>
-PREFIX bess:  <https://w3id.org/bess/voc#>
-
-"""
+        PREFIX did:   <https://w3id.org/dob/id/>
+        PREFIX dob:   <https://w3id.org/dob/voc#>
+        PREFIX so:    <http://schema.org/>
+        PREFIX sosa:  <http://www.w3.org/ns/sosa/>
+        PREFIX prov:  <http://www.w3.org/ns/prov#>
+        PREFIX bess:  <https://w3id.org/bess/voc#>
+    """
     select = "SELECT DISTINCT ?uprnValue ?contentUrl\n"
-
     where = [
-        # 1) grab any resource with a contentUrl
         "  ?res so:contentUrl ?contentUrl .",
-        # optional enum filter on the resource
     ]
-
     if args.types:
         where.append("  ?res dob:typeQualifier ?enum .")
-
-    # 2) walk back through any number of sosa:hasResult or prov steps
     where.append("  ?res ( ^sosa:hasResult | ^prov:generated / prov:used )* ?obs .")
-
-    # 3) assert it's an Observation and pull sensor & UPRNValue via explicit triples
     where.extend(
         [
             "  ?obs a sosa:Observation ;",
@@ -99,31 +90,23 @@ PREFIX bess:  <https://w3id.org/bess/voc#>
             "           so:value ?uprnValue .",
         ]
     )
-
-    # 4) restrict to the desired sensor type
     if args.sensor:
         where.append(f"  ?sensor a {args.sensor} .")
-
-    # 5) filter on your list of UPRNs
     quoted = ", ".join(f'"{u}"' for u in uprn_list)
     where.append(f"  FILTER(str(?uprnValue) IN ({quoted}))")
-
-    # 6) optionally filter the enum values
     if args.types:
         where.append(f"  FILTER(?enum IN ({args.types}))")
-
-    # assemble full query
     query = prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}"
     return query
 
 
 def build_output_area_query(area_list):
     prefixes = """
-PREFIX spr: <http://statistics.data.gov.uk/def/spatialrelations/>
-PREFIX so:  <http://schema.org/>
-PREFIX dob: <https://w3id.org/dob/voc#>
-PREFIX sid: <http://statistics.data.gov.uk/id/statistical-geography/>
-"""
+        PREFIX spr: <http://statistics.data.gov.uk/def/spatialrelations/>
+        PREFIX so:  <http://schema.org/>
+        PREFIX dob: <https://w3id.org/dob/voc#>
+        PREFIX sid: <http://statistics.data.gov.uk/id/statistical-geography/>
+    """
     select = "SELECT DISTINCT ?outputArea ?uprnValue\n"
     where = [
         "  VALUES ?outputArea { " + " ".join(area_list) + " } .",
@@ -136,9 +119,9 @@ PREFIX sid: <http://statistics.data.gov.uk/id/statistical-geography/>
 
 def build_ods_to_uprn_query(ods_list):
     prefixes = """
-PREFIX dob: <https://w3id.org/dob/voc#>
-PREFIX so:  <http://schema.org/>
-"""
+        PREFIX dob: <https://w3id.org/dob/voc#>
+        PREFIX so:  <http://schema.org/>
+    """
     select = "SELECT DISTINCT ?odsValue ?uprnValue\n"
     values = " ".join(f'"{o}"' for o in ods_list)
     where = [
