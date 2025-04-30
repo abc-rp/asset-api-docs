@@ -1,6 +1,7 @@
 import os
-import httpx
 import re
+
+import httpx
 from rdflib.plugins.stores.sparqlstore import SPARQLStore
 from rdflib.query import ResultRow
 
@@ -30,8 +31,8 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 # - RBG image: https://w3id.org/dob/id/rgb-image
 
 # Which UPRNs and which enums (types) to pull
-UPRNs  = "200003455212, 5045394"
-TYPES  = "did:rgb-image, did:lidar-pointcloud-merged, did:ir-temperature-array"
+UPRNs = "200003455212, 5045394"
+TYPES = "did:rgb-image, did:lidar-pointcloud-merged, did:ir-temperature-array"
 
 # --- SPARQL: find any resource with your enum & contentUrl, then crawl back to UPRN ---
 QUERY = f"""
@@ -52,7 +53,7 @@ WHERE {{
   # 2) Crawl back arbitrarily through DerivedResult→Processing→Result→Observation
   #    (and even chained DerivedResults) to get the UPRN literal
   ?res
-    ( 
+    (
     ^prov:generated   /   prov:used
     | ^sosa:hasResult
     )*
@@ -73,6 +74,7 @@ if not API_KEY:
 
 # --- Download helper -------------------------------------------------------
 
+
 def download_asset(url: str, save_dir: str) -> None:
     try:
         resp = httpx.get(url, headers={"x-api-key": API_KEY}, timeout=60)
@@ -80,7 +82,7 @@ def download_asset(url: str, save_dir: str) -> None:
 
         # Derive filename
         cd = resp.headers.get("Content-Disposition", "")
-        m  = re.search(r'filename="([^"]+)"', cd)
+        m = re.search(r'filename="([^"]+)"', cd)
         fn = m.group(1) if m else os.path.basename(url)
 
         os.makedirs(save_dir, exist_ok=True)
@@ -95,6 +97,7 @@ def download_asset(url: str, save_dir: str) -> None:
 
 # --- Main ------------------------------------------------------------------
 
+
 def main():
     results = endpoint.query(QUERY)
 
@@ -103,7 +106,7 @@ def main():
             continue
 
         uprn = str(row["uprnValue"])
-        url  = str(row["contentUrl"])
+        url = str(row["contentUrl"])
         folder = os.path.join(DOWNLOAD_DIR, uprn)
 
         print(f"Downloading into {folder}/  ←  {url}")

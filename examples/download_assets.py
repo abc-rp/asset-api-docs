@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-import os
-import re
 import argparse
 import csv
+import os
+import re
 
 import httpx
 from rdflib.plugins.stores.sparqlstore import SPARQLStore
-from rdflib.query import ResultRow
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -15,43 +15,41 @@ def parse_args():
     parser.add_argument(
         "--uprn",
         nargs="+",
-        help="One or more UPRNs or a CSV path (column 'uprn'), e.g. --uprn 12345 67890 or --uprn uprns.csv"
+        help="One or more UPRNs or a CSV path (column 'uprn'), e.g. --uprn 12345 67890 or --uprn uprns.csv",
     )
     parser.add_argument(
         "--ods",
         nargs="+",
-        help="One or more ODS codes or a CSV path (column 'ods'), e.g. --ods 00LAA or --ods ods.csv"
+        help="One or more ODS codes or a CSV path (column 'ods'), e.g. --ods 00LAA or --ods ods.csv",
+    )
+    parser.add_argument("--sensor", help="Sensor IRI, e.g. bess:OusterLidarSensor")
+    parser.add_argument(
+        "--types", help="Comma-separated list of asset type IRIs, e.g. did:rgb-image"
     )
     parser.add_argument(
-        "--sensor",
-        help="Sensor IRI, e.g. bess:OusterLidarSensor"
-    )
-    parser.add_argument(
-        "--types",
-        help="Comma-separated list of asset type IRIs, e.g. did:rgb-image"
-    )
-    parser.add_argument(
-        "--output-area", "--oa",
+        "--output-area",
+        "--oa",
         dest="output_area",
         nargs="+",
-        help="One or more output-area IRIs or a CSV path (column 'output_area'), e.g. --output-area E00032882 or --output-area areas.csv"
+        help="One or more output-area IRIs or a CSV path (column 'output_area'), e.g. --output-area E00032882 or --output-area areas.csv",
     )
     parser.add_argument(
         "--db-url",
         default="http://ec2-18-175-116-201.eu-west-2.compute.amazonaws.com:3030/didtriplestore/query",
-        help="SPARQL endpoint URL"
+        help="SPARQL endpoint URL",
     )
     parser.add_argument(
         "--download-dir",
         default=None,
-        help="Base directory for downloads (default: ./downloads)"
+        help="Base directory for downloads (default: ./downloads)",
     )
     parser.add_argument(
         "--api-key-env",
         default="API_KEY",
-        help="Environment variable name for the API key"
+        help="Environment variable name for the API key",
     )
     return parser.parse_args()
+
 
 def load_column_from_csv(path, column):
     values = []
@@ -64,6 +62,7 @@ def load_column_from_csv(path, column):
             if v:
                 values.append(v)
     return values
+
 
 def build_asset_query(uprn_list, args):
     prefixes = """
@@ -91,6 +90,7 @@ PREFIX bess:  <https://w3id.org/bess/voc#>
         where.append(f"  FILTER(?enum IN ({args.types}))")
     return prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}\n"
 
+
 def build_output_area_query(area_list):
     prefixes = """
 PREFIX spr: <http://statistics.data.gov.uk/def/spatialrelations/>
@@ -103,9 +103,10 @@ PREFIX sid: <http://statistics.data.gov.uk/id/statistical-geography/>
         "  VALUES ?outputArea { " + " ".join(area_list) + " } .",
         "  ?zone spr:within ?outputArea .",
         "  ?zone so:identifier ?ident .",
-        "  ?ident a dob:UPRNValue ; so:value ?uprnValue ."
+        "  ?ident a dob:UPRNValue ; so:value ?uprnValue .",
     ]
     return prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}\n"
+
 
 def build_ods_to_uprn_query(ods_list):
     prefixes = """
@@ -119,9 +120,10 @@ PREFIX so:  <http://schema.org/>
         "  ?zone so:identifier ?identODS .",
         "  ?identODS a dob:ODSValue ; so:value ?odsValue .",
         "  ?zone so:identifier ?identUPRN .",
-        "  ?identUPRN a dob:UPRNValue ; so:value ?uprnValue ."
+        "  ?identUPRN a dob:UPRNValue ; so:value ?uprnValue .",
     ]
     return prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}\n"
+
 
 def download_asset(url: str, save_dir: str, api_key: str):
     try:
@@ -138,6 +140,7 @@ def download_asset(url: str, save_dir: str, api_key: str):
     except Exception as e:
         print(f"✖ Failed to download {url}: {e}")
 
+
 def main():
     args = parse_args()
     download_base = args.download_dir or os.path.join(os.getcwd(), "downloads")
@@ -147,10 +150,10 @@ def main():
     if args.ods:
         ods_list = []
         for entry in args.ods:
-            if os.path.isfile(entry) and entry.lower().endswith('.csv'):
-                ods_list.extend(load_column_from_csv(entry, 'ods'))
+            if os.path.isfile(entry) and entry.lower().endswith(".csv"):
+                ods_list.extend(load_column_from_csv(entry, "ods"))
             else:
-                ods_list.extend(o.strip() for o in entry.split(',') if o.strip())
+                ods_list.extend(o.strip() for o in entry.split(",") if o.strip())
         ods_list = list(dict.fromkeys(ods_list))
 
         store = SPARQLStore(query_endpoint=args.db_url, returnFormat="json")
@@ -170,14 +173,14 @@ def main():
     if args.output_area:
         areas = []
         for entry in args.output_area:
-            if os.path.isfile(entry) and entry.lower().endswith('.csv'):
-                areas.extend(load_column_from_csv(entry, 'output_area'))
+            if os.path.isfile(entry) and entry.lower().endswith(".csv"):
+                areas.extend(load_column_from_csv(entry, "output_area"))
             else:
-                areas.extend(a.strip() for a in entry.split(',') if a.strip())
+                areas.extend(a.strip() for a in entry.split(",") if a.strip())
 
         standardized = []
         for a in areas:
-            if ':' not in a:
+            if ":" not in a:
                 standardized.append(f"sid:{a}")
             else:
                 standardized.append(a)
@@ -208,15 +211,14 @@ def main():
                     writer.writerow([u])
             print(f"✔ Saved CSV for {oa} → {out_csv}")
 
-
     # --- ASSET-DOWNLOAD MODE ---
     uprn_list = []
     if args.uprn:
         for entry in args.uprn:
-            if os.path.isfile(entry) and entry.lower().endswith('.csv'):
-                uprn_list.extend(load_column_from_csv(entry, 'uprn'))
+            if os.path.isfile(entry) and entry.lower().endswith(".csv"):
+                uprn_list.extend(load_column_from_csv(entry, "uprn"))
             else:
-                uprn_list.extend(u.strip() for u in entry.split(',') if u.strip())
+                uprn_list.extend(u.strip() for u in entry.split(",") if u.strip())
     uprn_list = list(dict.fromkeys(uprn_list))
 
     if uprn_list:
@@ -231,10 +233,11 @@ def main():
 
         for row in res:
             uprn_val = str(row["uprnValue"])
-            url      = str(row["contentUrl"])
-            tgt_dir  = os.path.join(download_base, uprn_val)
+            url = str(row["contentUrl"])
+            tgt_dir = os.path.join(download_base, uprn_val)
             print(f"⤷ Downloading {url} into {tgt_dir}/")
             download_asset(url, tgt_dir, api_key)
+
 
 if __name__ == "__main__":
     main()

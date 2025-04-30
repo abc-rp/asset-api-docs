@@ -1,6 +1,7 @@
 import os
-import httpx
 import re
+
+import httpx
 from rdflib.plugins.stores.sparqlstore import SPARQLStore
 from rdflib.query import ResultRow
 
@@ -61,6 +62,7 @@ if not API_KEY:
 
 # --- Helper to download a single asset into a given folder ----------------
 
+
 def download_asset(url: str, save_dir: str) -> None:
     try:
         resp = httpx.get(url, headers={"x-api-key": API_KEY})
@@ -86,6 +88,7 @@ def download_asset(url: str, save_dir: str) -> None:
 
 # --- Main execution --------------------------------------------------------
 
+
 def main():
     # Run the SPARQL query
     results = endpoint.query(QUERY)
@@ -95,7 +98,7 @@ def main():
         if not isinstance(row, ResultRow):
             continue
 
-        uprn_val    = str(row["uprnValue"])
+        uprn_val = str(row["uprnValue"])
         content_url = str(row["contentUrl"])
         uprn_folder = os.path.join(DOWNLOAD_DIR, uprn_val)
 

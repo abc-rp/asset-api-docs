@@ -1,6 +1,7 @@
 import os
-import httpx
 import re
+
+import httpx
 from rdflib.plugins.stores.sparqlstore import SPARQLStore
 from rdflib.query import ResultRow
 
@@ -23,7 +24,7 @@ SENSOR = "bess:OusterLidarSensor"
 # - bess:PhidgetHumiditySensor
 # - bess:PhidgetTemperatureSensor
 # - bess:OusterLidarSensor
-# - bess:FlirOryxCamera 
+# - bess:FlirOryxCamera
 # - bess:FlirA70Camera
 
 # SPARQL query: return the asset URL for the given UPRN and sensor
@@ -45,7 +46,7 @@ WHERE {{
   # 2) Crawl back through either:
   #    - Observation → sosa:hasResult
   #    - Processing → DerivedResult → (prov:generated / prov:used)
-  #    (any number of times) 
+  #    (any number of times)
   ?res
     (
       ^sosa:hasResult
@@ -74,6 +75,7 @@ if not API_KEY:
 
 # --- Helper to download a single asset into a given folder ----------------
 
+
 def download_asset(url: str, save_dir: str) -> None:
     try:
         resp = httpx.get(url, headers={"x-api-key": API_KEY})
@@ -97,6 +99,7 @@ def download_asset(url: str, save_dir: str) -> None:
 
 # --- Main execution --------------------------------------------------------
 
+
 def main():
     # Run the SPARQL query
     results = endpoint.query(QUERY)
@@ -106,9 +109,9 @@ def main():
         if not isinstance(row, ResultRow):
             continue
 
-        uprn_val    = str(row["uprnValue"])
+        uprn_val = str(row["uprnValue"])
         content_url = str(row["contentUrl"])
-        target_dir  = os.path.join(DOWNLOAD_DIR, uprn_val)
+        target_dir = os.path.join(DOWNLOAD_DIR, uprn_val)
 
         print(f"⤷ Downloading {content_url} into {target_dir}/ …")
         download_asset(content_url, target_dir)
