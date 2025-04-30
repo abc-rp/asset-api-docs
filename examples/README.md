@@ -119,7 +119,7 @@ python3 query_assist.py --uprn 200003455212, 5045394, 45127845
 python3 query_assist.py --uprn path/to/uprns.csv
 
 # ODS→UPRN mapping with recommendation code A (accepted) I (intervention recommended)
-python3 query_assist.py --ods 1G85013
+python3 query_assist.py --ods G85013
 
 # Output-area mode (single code)
 python3 query_assist.py --output-area E00004550
