@@ -15,7 +15,7 @@ def parse_args():
     parser.add_argument(
         "--uprn",
         nargs="+",
-        help="One or more UPRNs or a CSV path (column 'uprn'), e.g. --uprn 12345 67890 or --uprn uprns.csv",
+        help="One or more UPRNs or a CSV path (column 'uprn'), e.g. --uprn 200003455212 5045394 or --uprn uprns.csv",
     )
     parser.add_argument(
         "--ods",

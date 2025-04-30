@@ -105,7 +105,7 @@ python3 query_assist.py --uprn 5045394
 python3 query_assist.py --uprn 200003455212 5045394
 
 # Multiple UPRNs (comma-separated)
-python3 query_assist.py --uprn 123,456,789
+python3 query_assist.py --uprn 200003455212, 5045394, 45127845
 
 # CSV-only for UPRNs
 python3 query_assist.py --uprn path/to/uprns.csv
@@ -114,13 +114,13 @@ python3 query_assist.py --uprn path/to/uprns.csv
 python3 query_assist.py --ods 00LAA
 
 # ODS→UPRN mapping (multiple codes and CSV)
-python3 query_assist.py --ods 00LAA 00MBB path/to/ods.csv
+python3 query_assist.py --ods 00LAA 00NAD path/to/ods.csv
 
 # Output-area mode (single code)
 python3 query_assist.py --output-area E00032882
 
 # Output-area mode (multiple codes)
-python3 query_assist.py --output-area E00032882 E00032883
+python3 query_assist.py --output-area E00032882 E00063193 E00047411
 
 # CSV-only for output-area
 python3 query_assist.py --output-area path/to/areas.csv
