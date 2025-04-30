@@ -59,7 +59,7 @@ Granular scripts to improve legibility when viewing the SPARQL queries:
 - `get_all_assets_of_type_for_list_of_uprns.py`
 
 Unified script:
-- `download_assets.py`
+- `query_assist.py`
 
 This unified script replaces and extends the above utilities by allowing you to:
 
@@ -99,57 +99,57 @@ This unified script replaces and extends the above utilities by allowing you to:
 
 ```bash
 # Single UPRN
-python3 download_assets.py --uprn 5045394
+python3 query_assist.py --uprn 5045394
 
 # Multiple UPRNs (space-separated)
-python3 download_assets.py --uprn 200003455212 5045394
+python3 query_assist.py --uprn 200003455212 5045394
 
 # Multiple UPRNs (comma-separated)
-python3 download_assets.py --uprn 123,456,789
+python3 query_assist.py --uprn 123,456,789
 
 # CSV-only for UPRNs
-python3 download_assets.py --uprn path/to/uprns.csv
+python3 query_assist.py --uprn path/to/uprns.csv
 
 # ODS→UPRN mapping (single code)
-python3 download_assets.py --ods 00LAA
+python3 query_assist.py --ods 00LAA
 
 # ODS→UPRN mapping (multiple codes and CSV)
-python3 download_assets.py --ods 00LAA 00MBB path/to/ods.csv
+python3 query_assist.py --ods 00LAA 00MBB path/to/ods.csv
 
 # Output-area mode (single code)
-python3 download_assets.py --output-area E00032882
+python3 query_assist.py --output-area E00032882
 
 # Output-area mode (multiple codes)
-python3 download_assets.py --output-area E00032882 E00032883
+python3 query_assist.py --output-area E00032882 E00032883
 
 # CSV-only for output-area
-python3 download_assets.py --output-area path/to/areas.csv
+python3 query_assist.py --output-area path/to/areas.csv
 
 # Mixed UPRN and CSV
-python3 download_assets.py --uprn 123,456 path/to/uprns.csv
+python3 query_assist.py --uprn 123,456 path/to/uprns.csv
 
 # Sensor filter
-python3 download_assets.py --uprn 5045394 --sensor bess:OusterLidarSensor
+python3 query_assist.py --uprn 5045394 --sensor bess:OusterLidarSensor
 
 # Type filter
-python3 download_assets.py --uprn 5045394 --types did:rgb-image,did:lidar-pointcloud-merged
+python3 query_assist.py --uprn 5045394 --types did:rgb-image,did:lidar-pointcloud-merged
 
 # Sensor + type
-python3 download_assets.py --uprn 5045394 --sensor bess:FlirA70Camera --types did:ir-count-image
+python3 query_assist.py --uprn 5045394 --sensor bess:FlirA70Camera --types did:ir-count-image
 
 # Custom SPARQL endpoint
-python3 download_assets.py --uprn 200003455212 --db-url http://myhost:3030/mytriplestore/query
+python3 query_assist.py --uprn 200003455212 --db-url http://myhost:3030/mytriplestore/query
 
 # Custom download directory
-python3 download_assets.py --uprn 5045394 --download-dir /data/assets
+python3 query_assist.py --uprn 5045394 --download-dir /data/assets
 
 # Custom API key env var
 export MY_KEY="..."
-python3 download_assets.py --uprn 5045394 --api-key-env MY_KEY
+python3 query_assist.py --uprn 5045394 --api-key-env MY_KEY
 
 # All options combined
 export MY_KEY="..."
-python3 download_assets.py \
+python3 query_assist.py \
   --uprn 200003455212,5045394 path/to/uprns.csv \
   --ods 00LAA \
   --output-area E00032882,E00032883 \
@@ -160,4 +160,4 @@ python3 download_assets.py \
   --api-key-env MY_KEY
 ```
 
-Run `python3 download_assets.py -h` to see the full list of command-line options and examples.
+Run `python3 query_assist.py -h` to see the full list of command-line options and examples.
