@@ -118,7 +118,7 @@ python3 query_assist.py --uprn 200003455212, 5045394, 45127845
 # CSV-only for UPRNs
 python3 query_assist.py --uprn path/to/uprns.csv
 
-# ODS→UPRN mapping (single code)
+# ODS→UPRN mapping with recommendation code A (accepted) I (intervention recommended)
 python3 query_assist.py --ods 1G85013
 
 # Output-area mode (single code)
