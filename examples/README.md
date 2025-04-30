@@ -95,6 +95,14 @@ This unified script replaces and extends the above utilities by allowing you to:
 - **IR counts**: `did:ir-count-image`
 - **RGB image**: `did:rgb-image`
 
+Pointclouds are brotli compressed .pcd files. These can be decompressed using the Brotli CLI tool
+
+```bash
+brew install brotli
+```
+
+Or using the `br_decompress.py` script.
+
 #### Usage
 
 ```bash
@@ -153,4 +161,3 @@ python3 query_assist.py \
 ```
 
 Run `python3 query_assist.py -h` to see the full list of command-line options and examples.
-https://w3id.org/dob/id/zone-369fa9b5-692b-42f6-a060-d4aa951005ff
