@@ -34,11 +34,11 @@ def parse_args():
         "--output-area", "--oa",
         dest="output_area",
         nargs="+",
-        help="One or more output-area IRIs or a CSV path (column 'output_area'), e.g. --output-area sid:E00032882 or --output-area areas.csv"
+        help="One or more output-area IRIs or a CSV path (column 'output_area'), e.g. --output-area E00032882 or --output-area areas.csv"
     )
     parser.add_argument(
         "--db-url",
-        default="http://100.64.153.8:3030/didtriplestore/query",
+        default="http://ec2-18-175-116-201.eu-west-2.compute.amazonaws.com:3030/didtriplestore/query",
         help="SPARQL endpoint URL"
     )
     parser.add_argument(
@@ -174,10 +174,21 @@ def main():
                 areas.extend(load_column_from_csv(entry, 'output_area'))
             else:
                 areas.extend(a.strip() for a in entry.split(',') if a.strip())
-        formatted = [
-            f"<{a}>" if a.startswith("http://") or a.startswith("https://") else a
-            for a in areas
-        ]
+
+        standardized = []
+        for a in areas:
+            if ':' not in a:
+                standardized.append(f"sid:{a}")
+            else:
+                standardized.append(a)
+
+        formatted = []
+        for a in standardized:
+            if a.startswith("http://") or a.startswith("https://"):
+                formatted.append(f"<{a}>")
+            else:
+                formatted.append(a)
+
         store = SPARQLStore(query_endpoint=args.db_url, returnFormat="json")
         q = build_output_area_query(formatted)
         print("SPARQL query for output areas:\n", q)
@@ -196,6 +207,7 @@ def main():
                 for u in uprns:
                     writer.writerow([u])
             print(f"✔ Saved CSV for {oa} → {out_csv}")
+
 
     # --- ASSET-DOWNLOAD MODE ---
     uprn_list = []

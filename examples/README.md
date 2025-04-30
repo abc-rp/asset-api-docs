@@ -42,9 +42,9 @@ export API_KEY="your_api_key"
 
 **Permanent (automatic when Virtualenv is activated)**
 
-If you want this variable to be automatically set every time you activate your virtual environment, add the export line to the activate script inside your virtual environment. e.g. for macOS/Linux
+If you want this variable to be automatically set every time you activate your virtual environment, add the export line to the activate script inside your virtual environment. For example (macOS/Linux):
 
-Open `venv/bin/activate` and add the environment variable near the bottom (but before the final `unset` lines if present).
+Open `venv/bin/activate` and add the environment variable near the bottom (but before any final `unset` lines if present).
 
 ## Running scripts
 
@@ -63,8 +63,9 @@ Unified script:
 
 This unified script replaces and extends the above utilities by allowing you to:
 
-- Specify one or more UPRNs via **`--uprn`** (space- or comma-separated).
-- OR provide a **CSV file** with a column named `uprn` via **`--csv`**.
+- Specify one or more UPRNs via **`--uprn`** (space- or comma-separated), or provide a CSV file path (column `uprn`) to `--uprn`.
+- Specify one or more ODS codes via **`--ods`** (space- or comma-separated), or provide a CSV file path (column `ods`) to `--ods` for ODS→UPRN mapping.
+- Specify one or more output-area IRIs or codes via **`--output-area`**/`--oa` (space- or comma-separated), or provide a CSV file path (column `output_area`) to list UPRNs by output area.
 - Filter by **sensor** type (`--sensor`, e.g. `bess:OusterLidarSensor`).
 - Filter by **asset type** (`--types`, e.g. `did:rgb-image,did:lidar-pointcloud-merged`).
 - Override the **SPARQL endpoint** (`--db-url`).
@@ -106,11 +107,26 @@ python3 download_assets.py --uprn 200003455212 5045394
 # Multiple UPRNs (comma-separated)
 python3 download_assets.py --uprn 123,456,789
 
-# CSV-only
-python3 download_assets.py --csv path/to/uprns.csv
+# CSV-only for UPRNs
+python3 download_assets.py --uprn path/to/uprns.csv
+
+# ODS→UPRN mapping (single code)
+python3 download_assets.py --ods 00LAA
+
+# ODS→UPRN mapping (multiple codes and CSV)
+python3 download_assets.py --ods 00LAA 00MBB path/to/ods.csv
+
+# Output-area mode (single code)
+python3 download_assets.py --output-area E00032882
+
+# Output-area mode (multiple codes)
+python3 download_assets.py --output-area E00032882 E00032883
+
+# CSV-only for output-area
+python3 download_assets.py --output-area path/to/areas.csv
 
 # Mixed UPRN and CSV
-python3 download_assets.py --uprn 123,456 --csv path/to/uprns.csv
+python3 download_assets.py --uprn 123,456 path/to/uprns.csv
 
 # Sensor filter
 python3 download_assets.py --uprn 5045394 --sensor bess:OusterLidarSensor
@@ -128,14 +144,15 @@ python3 download_assets.py --uprn 200003455212 --db-url http://myhost:3030/mytri
 python3 download_assets.py --uprn 5045394 --download-dir /data/assets
 
 # Custom API key env var
-export MY_KEY=...
+export MY_KEY="..."
 python3 download_assets.py --uprn 5045394 --api-key-env MY_KEY
 
 # All options combined
-export MY_KEY=...
+export MY_KEY="..."
 python3 download_assets.py \
-  --uprn 200003455212,5045394 \
-  --csv path/to/uprns.csv \
+  --uprn 200003455212,5045394 path/to/uprns.csv \
+  --ods 00LAA \
+  --output-area E00032882,E00032883 \
   --sensor bess:OusterLidarSensor \
   --types did:lidar-pointcloud-merged \
   --db-url http://myhost:3030/mytriplestore/query \
