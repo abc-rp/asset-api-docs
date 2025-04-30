@@ -1,3 +1,4 @@
+
 import logging
 import os
 import re
@@ -22,6 +23,7 @@ here = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_DIR = os.path.join(here, "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+
 # Query parameters
 UPRN = "5045394"
 
@@ -32,6 +34,7 @@ PREFIX rdfs:  <http://www.w3.org/2000/01/rdf-schema#>
 PREFIX sosa:  <http://www.w3.org/ns/sosa/>
 PREFIX so:    <http://schema.org/>
 PREFIX owl:   <http://www.w3.org/2002/07/owl#>
+
 
 SELECT DISTINCT ?contentUrl
 WHERE {{
@@ -101,3 +104,4 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         logging.error(f"Error: {e}")
+

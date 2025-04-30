@@ -1,3 +1,4 @@
+
 # Python examples
 
 This directory contains a few Python scripts that will load and provision the graph database with provided turtle (.ttl) files and execute queries against it. Some will also then use results from queries to download assets from the API.
@@ -19,16 +20,19 @@ source venv/bin/activate
 ```
 
 **Windows (CMD)**
+
 ```bash
 venv\Scripts\activate.bat
 ```
 
 **Windows (PowerShell)**
+
 ```powershell
 venv\Scripts\Activate.ps1
 ```
 
 Install dependencies.
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -36,6 +40,7 @@ pip install -r requirements.txt
 ### 3. Set your API key
 
 **Temporary (session only)**
+
 ```bash
 export API_KEY="your_api_key"
 ```
