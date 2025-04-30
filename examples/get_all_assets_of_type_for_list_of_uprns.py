@@ -7,7 +7,7 @@ from rdflib.query import ResultRow
 
 # --- Configuration ---------------------------------------------------------
 
-# Your Fuseki/SPARQL endpoint (keep “/query” or switch to “/sparql” as needed)
+# SPARQL endpoint
 DB_URL = "http://ec2-18-175-116-201.eu-west-2.compute.amazonaws.com:3030/didtriplestore/query"
 endpoint = SPARQLStore(query_endpoint=DB_URL, returnFormat="json")
 
