@@ -158,3 +158,41 @@ python3 query_assist.py \
 ```
 
 Run `python3 query_assist.py -h` to see the full list of command-line options and examples.
+
+
+# Additional Data Information
+
+In this document we look at each data modality and note any additional information that would be useful to users of the xri-alpha-sandbox.
+
+## RGB
+
+sRGB images are provided at a resolution optimised for computer vision tasks. Vehicles and humans are masked out, if a user finds an unmasked person or vehicle (most critically the number plate), please report it to xRI.
+
+
+## IR
+
+The outermost regions of the IR images and temperature arrays have been masked out, this is due to hot edges due to the IR detector heating itself up during operation. In the temperature arrays the masked areas are NaN elements in the compressed numpy array.
+
+Additionally when working with the IR data there are some assumptions to note about the way in which radiometic temperature pixels themselves are calculated.
+
+- The formula requires the distance of each pixel from the detector, currently this is a sensible hard coded value, we are in the process of calculating these distances from the lidar.
+- Building materials tend to be in a narrow range of emissivities $\epsilon\in [0.85,0.93]$, we currently hard code a single sensible value for emissivity but are developing methods for estimating building materials dynamically.
+- The formula only governs a certain region of materials in a number of variables. This means that temperature arrays calculated for buildings during the night are valid sources of data for understanding temperature.
+- During the day, we are in a reflectance dominated regime due to the influence of the sun, radiometric temperatures calculated in this regime are not reliable.
+- The sky is an object outside the scope of the radiometric temperature calculation, this is a low reflectance, low emissivity regime that our radiometric temperature calculations cannot really say anything meaningful about.
+
+## LiDAR
+
+We have four 360 degree grey scale panormas these are:
+
+- Near-infrared (NIR) capturing light in the near-infrared spectrum (just beyond visible light). NIR is often used to assess vegetation health, surface properties, and for capturing detailed textures in low-light conditions.
+
+- The range modality provides the distance from the LiDAR sensor to objects in the environment. Each pixel in this image represents a distance measurement in millimeters, creating a depth map of the scene.
+
+- The reflectivity image captures the intensity of the LiDAR signal that bounces back to the sensor. Reflectivity depends on the surface material and angle of incidence, making it useful for distinguishing between materials or identifying road markings, signs, and other objects.
+
+- The signal strength or return signal intensity measures the quality of the LiDAR return. Stronger signals usually indicate clearer, more reliable measurements. It can also reflect surface properties and environmental conditions.
+
+We also have two pointclouds one is a single frame that is closest to orthogonal to the UPRN, the other is a dense, orchstrated pointcloud created by merging many pointcloud frames on either side of the most orthogonal frame using the [Iterative Closes Point (ICP) registration algorithm](http://ki-www.cvl.iis.u-tokyo.ac.jp/class2013/2013w/paper/correspondingAndRegistration/03_Levoy.pdf).
+
+ICP registration can also fail completely resulting in dense but unaligned pointclouds. A single centre frame has been provided as a failback pointcloud in the event of an unusable merged pointcloud.

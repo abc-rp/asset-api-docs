@@ -72,13 +72,13 @@ def load_column_from_csv(path, column):
 
 def build_asset_query(uprn_list, args):
     prefixes = """
-        PREFIX did:   <https://w3id.org/dob/id/>
-        PREFIX dob:   <https://w3id.org/dob/voc#>
-        PREFIX so:    <http://schema.org/>
-        PREFIX sosa:  <http://www.w3.org/ns/sosa/>
-        PREFIX prov:  <http://www.w3.org/ns/prov#>
-        PREFIX bess:  <https://w3id.org/bess/voc#>
-    """
+PREFIX did:   <https://w3id.org/dob/id/>
+PREFIX dob:   <https://w3id.org/dob/voc#>
+PREFIX so:    <http://schema.org/>
+PREFIX sosa:  <http://www.w3.org/ns/sosa/>
+PREFIX prov:  <http://www.w3.org/ns/prov#>
+PREFIX bess:  <https://w3id.org/bess/voc#>
+"""
     select = "SELECT DISTINCT ?uprnValue ?contentUrl\n"
     where = [
         "  ?res so:contentUrl ?contentUrl .",
@@ -108,11 +108,11 @@ def build_asset_query(uprn_list, args):
 
 def build_output_area_query(area_list):
     prefixes = """
-        PREFIX spr: <http://statistics.data.gov.uk/def/spatialrelations/>
-        PREFIX so:  <http://schema.org/>
-        PREFIX dob: <https://w3id.org/dob/voc#>
-        PREFIX sid: <http://statistics.data.gov.uk/id/statistical-geography/>
-    """
+PREFIX spr: <http://statistics.data.gov.uk/def/spatialrelations/>
+PREFIX so:  <http://schema.org/>
+PREFIX dob: <https://w3id.org/dob/voc#>
+PREFIX sid: <http://statistics.data.gov.uk/id/statistical-geography/>
+"""
     select = "SELECT DISTINCT ?outputArea ?uprnValue\n"
     where = [
         "  VALUES ?outputArea { " + " ".join(area_list) + " } .",
@@ -126,9 +126,9 @@ def build_output_area_query(area_list):
 
 def build_ods_to_uprn_query(ods_list):
     prefixes = """
-        PREFIX dob: <https://w3id.org/dob/voc#>
-        PREFIX so:  <http://schema.org/>
-    """
+PREFIX dob: <https://w3id.org/dob/voc#>
+PREFIX so:  <http://schema.org/>
+"""
     select = "SELECT DISTINCT ?odsValue ?uprnValue ?recCodeAddress\n"
     values = " ".join(f'"{o}"' for o in ods_list)
     where = [
