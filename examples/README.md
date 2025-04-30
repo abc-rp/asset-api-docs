@@ -136,9 +136,6 @@ python3 query_assist.py --uprn 5045394 --sensor bess:OusterLidarSensor
 # Type filter
 python3 query_assist.py --uprn 5045394 --types did:rgb-image,did:lidar-pointcloud-merged
 
-# Sensor + type
-python3 query_assist.py --uprn 5045394 --sensor bess:FlirA70Camera --types did:ir-count-image
-
 # Custom SPARQL endpoint
 python3 query_assist.py --uprn 200003455212 --db-url http://myhost:3030/mytriplestore/query
 
