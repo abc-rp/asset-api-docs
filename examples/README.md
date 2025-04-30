@@ -162,8 +162,6 @@ Run `python3 query_assist.py -h` to see the full list of command-line options an
 
 # Additional Data Information
 
-In this document we look at each data modality and note any additional information that would be useful to users of the xri-alpha-sandbox.
-
 ## RGB
 
 sRGB images are provided at a resolution optimised for computer vision tasks. Vehicles and humans are masked out, if a user finds an unmasked person or vehicle (most critically the number plate), please report it to xRI.
@@ -179,7 +177,7 @@ Additionally when working with the IR data there are some assumptions to note ab
 - Building materials tend to be in a narrow range of emissivities $\epsilon\in [0.85,0.93]$, we currently hard code a single sensible value for emissivity but are developing methods for estimating building materials dynamically.
 - The formula only governs a certain region of materials in a number of variables. This means that temperature arrays calculated for buildings during the night are valid sources of data for understanding temperature.
 - During the day, we are in a reflectance dominated regime due to the influence of the sun, radiometric temperatures calculated in this regime are not reliable.
-- The sky is an object outside the scope of the radiometric temperature calculation, this is a low reflectance, low emissivity regime that our radiometric temperature calculations cannot really say anything meaningful about.
+- The sky is an object outside the scope of the radiometric temperature calculation, this is a low reflectance, low emissivity regime that our radiometric temperature calculations cannot say anything meaningful about.
 
 ## LiDAR
 
