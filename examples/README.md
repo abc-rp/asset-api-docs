@@ -141,12 +141,10 @@ python3 query_assist.py --uprn 5045394 --download-dir /data/assets
 export MY_KEY="..."
 python3 query_assist.py --uprn 5045394 --api-key-env MY_KEY
 
-# All options combined
+# A Few options at once
 export MY_KEY="..."
 python3 query_assist.py \
   --uprn 200003455212,5045394 \
-  --ods 00LAA \
-  --output-area E00032882,E00032883 \
   --sensor bess:OusterLidarSensor \
   --types did:lidar-pointcloud-merged \
   --db-url http://myhost:3030/mytriplestore/query \
