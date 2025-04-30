@@ -187,7 +187,7 @@ def main():
                 writer.writerow(
                     [row["odsValue"], row["uprnValue"], row.get("recCodeAddress")]
                 )
-        logging.info(f"✔ Saved ODS→UPRN CSV with recCodeAddress → {out_csv}")
+        logging.info(f"✔ Saved ODS→UPRN CSV → {out_csv}")
         return
 
     # --- OUTPUT-AREA MODE ---
