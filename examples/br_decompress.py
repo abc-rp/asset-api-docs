@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 
 import argparse
+import logging
 import os
 
 import brotli
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 
 def decompress_and_replace(input_file):
@@ -24,9 +30,9 @@ def decompress_and_replace(input_file):
 
         os.remove(input_file)
 
-        print(f"Decompressed and replaced: {input_file} -> {output_file}")
+        logging.info(f"Decompressed and replaced: {input_file} -> {output_file}")
     except Exception as e:
-        print(f"Error processing {input_file}: {e}")
+        logging.error(f"Error processing {input_file}: {e}")
 
 
 def find_and_replace_pcd_br(directory):
@@ -37,7 +43,7 @@ def find_and_replace_pcd_br(directory):
     :param directory: Path to the directory to search for .pcd.br files
     """
     if not os.path.exists(directory):
-        print(f"Directory not found: {directory}")
+        logging.error(f"Directory not found: {directory}")
         return
 
     # Find all .pcd.br files
@@ -48,15 +54,15 @@ def find_and_replace_pcd_br(directory):
                 pcd_br_files.append(os.path.join(root, file))
 
     if not pcd_br_files:
-        print(f"No .pcd.br files found in directory: {directory}")
+        logging.warning(f"No .pcd.br files found in directory: {directory}")
         return
 
-    print(f"Found {len(pcd_br_files)} .pcd.br files to decompress.")
+    logging.info(f"Found {len(pcd_br_files)} .pcd.br files to decompress.")
 
     for file_path in pcd_br_files:
         decompress_and_replace(file_path)
 
-    print("All decompression and replacement tasks completed.")
+    logging.info("All decompression and replacement tasks completed.")
 
 
 def main():
@@ -71,7 +77,7 @@ def main():
     )
     args = parser.parse_args()
 
-    print(f"Using directory: {args.directory}")
+    logging.info(f"Using directory: {args.directory}")
     find_and_replace_pcd_br(args.directory)
 
 

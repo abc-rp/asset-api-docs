@@ -1,9 +1,15 @@
+import logging
 import os
 import re
 
 import httpx
 from rdflib.plugins.stores.sparqlstore import SPARQLStore
 from rdflib.query import ResultRow
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 # --- Configuration ---------------------------------------------------------
 
@@ -92,9 +98,9 @@ def download_asset(url: str, save_dir: str) -> None:
         with open(path, "wb") as f:
             f.write(resp.content)
 
-        print(f"✔ Saved {url} → {path}")
+        logging.info(f"✔ Saved {url} → {path}")
     except Exception as e:
-        print(f"✖ Failed to download {url}: {e}")
+        logging.error(f"✖ Failed to download {url}: {e}")
 
 
 # --- Main execution --------------------------------------------------------
@@ -113,7 +119,7 @@ def main():
         content_url = str(row["contentUrl"])
         target_dir = os.path.join(DOWNLOAD_DIR, uprn_val)
 
-        print(f"⤷ Downloading {content_url} into {target_dir}/ …")
+        logging.info(f"⤷ Downloading {content_url} into {target_dir}/ …")
         download_asset(content_url, target_dir)
 
 
@@ -121,4 +127,4 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(f"Error: {e}")
+        logging.error(f"Error: {e}")
