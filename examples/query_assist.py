@@ -114,7 +114,8 @@ def build_output_area_query(area_list):
         "  ?zone so:identifier ?ident .",
         "  ?ident a dob:UPRNValue ; so:value ?uprnValue .",
     ]
-    return prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}\n"
+    query = prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}\n"
+    return query
 
 
 def build_ods_to_uprn_query(ods_list):
@@ -122,16 +123,18 @@ def build_ods_to_uprn_query(ods_list):
         PREFIX dob: <https://w3id.org/dob/voc#>
         PREFIX so:  <http://schema.org/>
     """
-    select = "SELECT DISTINCT ?odsValue ?uprnValue\n"
+    select = "SELECT DISTINCT ?odsValue ?uprnValue ?recCodeAIMS\n"
     values = " ".join(f'"{o}"' for o in ods_list)
     where = [
         f"  VALUES ?odsValue {{ {values} }} .",
         "  ?zone so:identifier ?identODS .",
-        "  ?identODS a dob:ODSValue ; so:value ?odsValue .",
+        "  ?identODS a dob:ODSValue ; so:value ?odsValue ;",
+        "            dob:recommendationCodeAIMS ?recCodeAIMS .",
         "  ?zone so:identifier ?identUPRN .",
         "  ?identUPRN a dob:UPRNValue ; so:value ?uprnValue .",
     ]
-    return prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}\n"
+    query = prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}\n"
+    return query
 
 
 def download_asset(url: str, save_dir: str, api_key: str):
@@ -167,16 +170,19 @@ def main():
 
         store = SPARQLStore(query_endpoint=args.db_url, returnFormat="json")
         q = build_ods_to_uprn_query(ods_list)
-        print("SPARQL query for ODS→UPRN mapping:\n", q)
+        print("SPARQL query for ODS→UPRN mapping with recCodeAIMS:\n", q)
         res = store.query(q)
 
         out_csv = os.path.join(download_base, "ods_to_uprn.csv")
         with open(out_csv, "w", newline="") as cf:
             writer = csv.writer(cf)
-            writer.writerow(["ods", "uprn"])
+            writer.writerow(["ods", "uprn", "recommendationCodeAIMS"])
             for row in res:
-                writer.writerow([row["odsValue"], row["uprnValue"]])
-        print(f"✔ Saved ODS→UPRN CSV → {out_csv}")
+                writer.writerow(
+                    [row["odsValue"], row["uprnValue"], row.get("recCodeAIMS")]
+                )
+        print(f"✔ Saved ODS→UPRN CSV with recCodeAIMS → {out_csv}")
+        return
 
     # --- OUTPUT-AREA MODE ---
     if args.output_area:
