@@ -83,13 +83,13 @@ This unified script replaces and extends the above utilities by allowing you to:
 #### Supported asset types
 
 - **Merged lidar point clouds**: `did:lidar-pointcloud-merged`
+- **Pointcloud frame**: `did:lidar-pointcloud-frame`
 - **Lidar range panorama images**: `did:lidar-range-pano`
 - **Lidar reflectance for panorama**: `did:lidar-reflectance-pano`
-- **Temperature in celsius** (no contentUrl): `did:celsius-temperature`
 - **Lidar signal intensity for panoramas**: `did:lidar-signal-pano`
 - **Lidar Near Infrared for panoramas**: `did:lidar-nearir-pano`
+- **Temperature in celsius** (no contentUrl): `did:celsius-temperature`
 - **Relative humidity** (no contentUrl): `did:relative-humidity`
-- **Pointcloud frame**: `did:lidar-pointcloud-frame`
 - **IR false colour**: `did:ir-false-color-image`
 - **IR temperature array**: `did:ir-temperature-array`
 - **IR counts**: `did:ir-count-image`
@@ -103,7 +103,7 @@ brew install brotli
 
 Or using the `br_decompress.py` script.
 
-#### Usage
+#### `query_assist.py` Usage
 
 ```bash
 # Single UPRN
