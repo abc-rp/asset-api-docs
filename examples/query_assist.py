@@ -66,29 +66,44 @@ def load_column_from_csv(path, column):
 
 def build_asset_query(uprn_list, args):
     prefixes = """
+PREFIX did:   <https://w3id.org/dob/id/>
 PREFIX dob:   <https://w3id.org/dob/voc#>
 PREFIX so:    <http://schema.org/>
 PREFIX sosa:  <http://www.w3.org/ns/sosa/>
 PREFIX prov:  <http://www.w3.org/ns/prov#>
 PREFIX bess:  <https://w3id.org/bess/voc#>
+
 """
     select = "SELECT DISTINCT ?uprnValue ?contentUrl\n"
+
     where = [
+        # 1) grab any resource with a contentUrl
         "  ?res so:contentUrl ?contentUrl .",
+        # 2) walk back through any number of sosa:hasResult or prov steps
         "  ?res ( ^sosa:hasResult | ^prov:generated / prov:used )* ?obs .",
-        "  ?obs sosa:hasFeatureOfInterest ?foi .",
-        "  ?foi so:identifier ?ident .",
-        "  ?ident a dob:UPRNValue ; so:value ?uprnValue .",
+        # 3) assert it's an Observation, pull sensor & UPRN in one go
+        "  ?obs a sosa:Observation ;",
+        "       sosa:madeBySensor      ?sensor ;",
+        "       sosa:hasFeatureOfInterest/so:identifier/so:value  ?uprnValue .",
     ]
-    if args.sensor:
-        where.insert(1, f"  ?obs a {args.sensor} .")
+
+    # optional enum filter on the resource
     if args.types:
         where.insert(1, "  ?res dob:typeQualifier ?enum .")
+
+    # 4) restrict to the desired sensor type
+    if args.sensor:
+        where.append(f"  ?sensor a {args.sensor} .")
+
+    # 5) filter on your list of UPRNs
     quoted = ", ".join(f'"{u}"' for u in uprn_list)
     where.append(f"  FILTER(str(?uprnValue) IN ({quoted}))")
+
+    # 6) optionally filter the enum values
     if args.types:
         where.append(f"  FILTER(?enum IN ({args.types}))")
-    return prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}\n"
+
+    return prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}"
 
 
 def build_output_area_query(area_list):

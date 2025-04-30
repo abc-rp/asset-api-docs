@@ -111,22 +111,16 @@ python3 query_assist.py --uprn 200003455212, 5045394, 45127845
 python3 query_assist.py --uprn path/to/uprns.csv
 
 # ODS→UPRN mapping (single code)
-python3 query_assist.py --ods 00LAA
-
-# ODS→UPRN mapping (multiple codes and CSV)
-python3 query_assist.py --ods 00LAA 00NAD path/to/ods.csv
+python3 query_assist.py --ods 1G85013
 
 # Output-area mode (single code)
-python3 query_assist.py --output-area E00032882
+python3 query_assist.py --output-area E00004550
 
 # Output-area mode (multiple codes)
-python3 query_assist.py --output-area E00032882 E00063193 E00047411
+python3 query_assist.py --output-area E00004550 E00032882 E00063193 E00047411
 
 # CSV-only for output-area
 python3 query_assist.py --output-area path/to/areas.csv
-
-# Mixed UPRN and CSV
-python3 query_assist.py --uprn 123,456 path/to/uprns.csv
 
 # Sensor filter
 python3 query_assist.py --uprn 5045394 --sensor bess:OusterLidarSensor
@@ -150,7 +144,7 @@ python3 query_assist.py --uprn 5045394 --api-key-env MY_KEY
 # All options combined
 export MY_KEY="..."
 python3 query_assist.py \
-  --uprn 200003455212,5045394 path/to/uprns.csv \
+  --uprn 200003455212,5045394 \
   --ods 00LAA \
   --output-area E00032882,E00032883 \
   --sensor bess:OusterLidarSensor \
@@ -161,3 +155,4 @@ python3 query_assist.py \
 ```
 
 Run `python3 query_assist.py -h` to see the full list of command-line options and examples.
+https://w3id.org/dob/id/zone-369fa9b5-692b-42f6-a060-d4aa951005ff
