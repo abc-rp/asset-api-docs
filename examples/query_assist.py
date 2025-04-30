@@ -79,17 +79,26 @@ PREFIX bess:  <https://w3id.org/bess/voc#>
     where = [
         # 1) grab any resource with a contentUrl
         "  ?res so:contentUrl ?contentUrl .",
-        # 2) walk back through any number of sosa:hasResult or prov steps
-        "  ?res ( ^sosa:hasResult | ^prov:generated / prov:used )* ?obs .",
-        # 3) assert it's an Observation, pull sensor & UPRN in one go
-        "  ?obs a sosa:Observation ;",
-        "       sosa:madeBySensor      ?sensor ;",
-        "       sosa:hasFeatureOfInterest/so:identifier/so:value  ?uprnValue .",
+        # optional enum filter on the resource
     ]
 
-    # optional enum filter on the resource
     if args.types:
-        where.insert(1, "  ?res dob:typeQualifier ?enum .")
+        where.append("  ?res dob:typeQualifier ?enum .")
+
+    # 2) walk back through any number of sosa:hasResult or prov steps
+    where.append("  ?res ( ^sosa:hasResult | ^prov:generated / prov:used )* ?obs .")
+
+    # 3) assert it's an Observation and pull sensor & UPRNValue via explicit triples
+    where.extend(
+        [
+            "  ?obs a sosa:Observation ;",
+            "       sosa:madeBySensor ?sensor ;",
+            "       sosa:hasFeatureOfInterest ?foi .",
+            "  ?foi so:identifier ?uprnRes .",
+            "  ?uprnRes a dob:UPRNValue ;",
+            "           so:value ?uprnValue .",
+        ]
+    )
 
     # 4) restrict to the desired sensor type
     if args.sensor:
@@ -103,7 +112,9 @@ PREFIX bess:  <https://w3id.org/bess/voc#>
     if args.types:
         where.append(f"  FILTER(?enum IN ({args.types}))")
 
-    return prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}"
+    # assemble full query
+    query = prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}"
+    return query
 
 
 def build_output_area_query(area_list):
