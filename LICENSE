@@ -97,16 +97,11 @@ Schedule 1  – Evaluation Data
 
 A description of the evaluation data:
 Source of data
-    • Alpha quality dataset gathered across Winter 2023/24
-    • Data collected by 2 proprietary Built Environment Scanning Systems across 8 GB cities
+    • Beta quality dataset gathered across Winter 2025
+    • Data collected by 2 proprietary Built Environment Scanning Systems across Greater London
     • Sensor data obtained from LiDAR, RGB cameras, Infra-red cameras and GPS / INS / Odometry
-    • Information linked to UK National Unique Property Reference Numbers (UPRN), linking to WGS84 Lat / Long and / or British National Grid
+    • Information linked to UK National Unique Property Reference Numbers (UPRN), linking to WGS84 Lat / Long and /, British National Grid, NHS ODS codes and ONS Output Areas.
     • Information contained in the dataset may comprise Day or Night (Date time in UTC)
-Data size
-    • Approximately 60GB unzipped
-    • Approximately 10GB larger when all point clouds are decompressed
 Remarks on the data:
-    • This is alpha quality data for evaluation purposes only
-    • UPRNs contained within the dataset do not necessarily correlate to a specific city or region across the 8 GB cities. You should assume a random allocation
-    • Most UPRNs will have either day or night, but are unlikely to have both
-    • It is possible hardware was temporarily unavailable during certain scanning periods, hence some UPRNs will not have all sensor modalities available 
+    • This is beta quality data for evaluation purposes only
+    • It is possible hardware was temporarily unavailable during certain scanning periods, hence some UPRNs will not have all sensor modalities available
