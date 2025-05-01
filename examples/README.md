@@ -11,7 +11,7 @@ cd examples
 python3 -m venv venv
 ```
 
-### 2. Activate and install requirements
+### 2. Activate environment
 
 **macOS/Linux**
 ```bash
@@ -30,13 +30,13 @@ venv\Scripts\activate.bat
 venv\Scripts\Activate.ps1
 ```
 
-Install dependencies.
+### 3. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Set your API key
+### 4. Set your API key
 
 **Temporary (session only)**
 
@@ -108,7 +108,7 @@ brew install brotli
 Or using the `br_decompress.py` script.
 
 ```bash
-python3 br_decompress.py --directotry ./downloads
+python3 br_decompress.py --directory ./downloads
 ```
 
 #### `query_assist.py` Usage
