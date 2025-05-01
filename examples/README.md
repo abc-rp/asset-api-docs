@@ -1,4 +1,3 @@
-
 # Python examples
 
 This directory contains a few Python scripts that will load and provision the graph database with provided turtle (.ttl) files and execute queries against it. Some will also then use results from queries to download assets from the API.
@@ -169,7 +168,7 @@ Run `python3 query_assist.py -h` to see the full list of command-line options an
 
 ## RGB
 
-sRGB images are provided at a resolution optimised for computer vision tasks. Vehicles and humans are masked out, if a user finds an unmasked person or vehicle (most critically the number plate), please report it to xRI.
+sRGB images are provided in the API at a resolution optimised for computer vision tasks. Vehicles and humans are masked out using an automated process, if a user finds an unmasked person or vehicle (most critically the number plate), please report it to [xRI](mailto:info@xri.online).
 
 
 ## IR
@@ -180,8 +179,7 @@ Additionally when working with the IR data there are some assumptions to note ab
 
 - The formula requires the distance of each pixel from the detector, currently this is a sensible hard coded value, we are in the process of calculating these distances from the lidar.
 - Building materials tend to be in a narrow range of emissivities $\epsilon\in [0.85,0.93]$, we currently hard code a single sensible value for emissivity but are developing methods for estimating building materials dynamically.
-- The formula only governs a certain region of materials in a number of variables. This means that temperature arrays calculated for buildings during the night are valid sources of data for understanding temperature.
-- During the day, we are in a reflectance dominated regime due to the influence of the sun, radiometric temperatures calculated in this regime are not reliable.
+- During the day, we are in a reflectance dominated regime due to the influence of the sun, radiometric temperatures calculated in this regime are not reliable. Thermal data is provided for the night hours only (1 hour after sunset to 1 hour before sunrise).
 - The sky is an object outside the scope of the radiometric temperature calculation, this is a low reflectance, low emissivity regime that our radiometric temperature calculations cannot say anything meaningful about.
 
 ## LiDAR
@@ -196,6 +194,6 @@ We have four 360 degree grey scale panormas these are:
 
 - The signal strength or return signal intensity measures the quality of the LiDAR return. Stronger signals usually indicate clearer, more reliable measurements. It can also reflect surface properties and environmental conditions.
 
-We also have two pointclouds one is a single frame that is closest to orthogonal to the UPRN, the other is a dense, orchstrated pointcloud created by merging many pointcloud frames on either side of the most orthogonal frame using the [Iterative Closes Point (ICP) registration algorithm](http://ki-www.cvl.iis.u-tokyo.ac.jp/class2013/2013w/paper/correspondingAndRegistration/03_Levoy.pdf).
+We also have two pointcloud types one is a single frame that is closest to orthogonal to the UPRN, the other is a dense, orchstrated pointcloud created by merging many pointcloud frames on either side of the most orthogonal frame using the [Iterative Closes Point (ICP) registration algorithm](http://ki-www.cvl.iis.u-tokyo.ac.jp/class2013/2013w/paper/correspondingAndRegistration/03_Levoy.pdf).
 
-ICP registration can also fail completely resulting in dense but unaligned pointclouds. A single centre frame has been provided as a failback pointcloud in the event of an unusable merged pointcloud.
+ICP registration can also fail completely resulting in dense but unaligned pointclouds. The single centre frame is provided as a failback pointcloud in the event of an unusable merged pointcloud.
