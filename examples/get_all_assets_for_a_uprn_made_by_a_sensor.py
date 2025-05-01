@@ -1,56 +1,77 @@
+import logging
 import os
-import httpx
 import re
+
+import httpx
 from rdflib.plugins.stores.sparqlstore import SPARQLStore
 from rdflib.query import ResultRow
 
-# NOTE: THIS QUERY WON'T WORK IF THE BESS SENSOR STACK IS NOT IN THE GRAPH
-# https://github.com/abc-rp/bess_rdf/blob/feature/data_model/sensor_stack/6284_156243.ttl
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
-# Connect to the SPARQL endpoint (ensuring all the .ttl files are loaded into the triplestore)
-DB_URL = "http://localhost:3030/dob-subset-14-04-25/query"
+# --- Configuration ---------------------------------------------------------
+
+# SPARQL endpoint
+DB_URL = "http://ec2-18-175-116-201.eu-west-2.compute.amazonaws.com:3030/didtriplestore/query"
 endpoint = SPARQLStore(query_endpoint=DB_URL, returnFormat="json")
 
-# Directory to save downloaded assets
+# Base download directory
 here = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_DIR = os.path.join(here, "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-
-
-# Query params
+# Query parameters
 UPRN = "5045394"
-# The available sensor labels you can filter on are defined in the ontology:
-# https://github.com/abc-rp/bess/blob/main/voc/index.ttl
 SENSOR = "bess:OusterLidarSensor"
-# Define the query
-QUERY = f"""
-# Get all assets (dob:Result) for a specific UPRN (dob:UPRNValue) made by the Lidar (bess:OusterLidarSensor)
-PREFIX dob: <https://w3id.org/dob/voc#>
-PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-PREFIX sosa: <http://www.w3.org/ns/sosa/>
-PREFIX bess: <https://w3id.org/bess/voc#>
-PREFIX so: <http://schema.org/>
-PREFIX owl: <http://www.w3.org/2002/07/owl#>
 
-SELECT DISTINCT ?contentUrl
+# The available sensors are:
+# - bess:PhidgetHumiditySensor
+# - bess:PhidgetTemperatureSensor
+# - bess:OusterLidarSensor
+# - bess:FlirOryxCamera
+# - bess:FlirA70Camera
+
+# SPARQL query: return the asset URL for the given UPRN and sensor
+QUERY = f"""
+PREFIX dob:   <https://w3id.org/dob/voc#>
+PREFIX rdfs:  <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX sosa:  <http://www.w3.org/ns/sosa/>
+PREFIX bess:  <https://w3id.org/bess/voc#>
+PREFIX so:    <http://schema.org/>
+PREFIX prov:  <http://www.w3.org/ns/prov#>
+PREFIX owl:   <http://www.w3.org/2002/07/owl#>
+
+SELECT DISTINCT ?uprnValue ?contentUrl
 WHERE {{
-  ?result a sosa:Result ;
-            so:contentUrl ?contentUrl .
-  ?observation a sosa:Observation ;
-            sosa:hasResult ?result ;
-            sosa:madeBySensor ?sensor;
-            sosa:hasFeatureOfInterest ?foi .
+  # 1) Grab any resource carrying a contentUrl
+  ?res
+    so:contentUrl  ?contentUrl .
+
+  # 2) Crawl back through either:
+  #    - Observation → sosa:hasResult
+  #    - Processing → DerivedResult → (prov:generated / prov:used)
+  #    (any number of times)
+  ?res
+    (
+      ^sosa:hasResult
+      | ^prov:generated / prov:used
+    )*
+    ?obs .
+
+  # 3) Now we’re at the Observation; pull out sensor & UPRN
+  ?obs a sosa:Observation ;
+       sosa:madeBySensor      ?sensor ;
+       sosa:hasFeatureOfInterest/so:identifier/so:value  ?uprnValue .
+
+  # 4) Filter on specific sensor type and UPRN
   ?sensor a {SENSOR} .
-  ?foi a sosa:FeatureOfInterest ;
-            so:identifier ?uprn.
-   ?uprn a dob:UPRNValue ;
-           so:value ?uprnValue .
-  FILTER(?uprnValue = {UPRN})
+  FILTER(str(?uprnValue) = "{UPRN}")
 }}
 """
 
-
+# Your API key from environment
 API_KEY = os.getenv("API_KEY")
 if not API_KEY:
     raise ValueError(
@@ -58,44 +79,52 @@ if not API_KEY:
     )
 
 
-# Run the query
-results = endpoint.query(QUERY)
+# --- Helper to download a single asset into a given folder ----------------
 
 
-# A simple synchronous fetch function
-def download_asset(url):
-    # You can parallelise this with asyncio but be careful with the number of concurrent requests
-    # so that you stay within the rate limits
+def download_asset(url: str, save_dir: str) -> None:
     try:
-        response = httpx.get(url, headers={"x-api-key": API_KEY})
-        response.raise_for_status()  # Raise an error for bad responses
+        resp = httpx.get(url, headers={"x-api-key": API_KEY})
+        resp.raise_for_status()
 
-        # Try to get the filename from the content-disposition header
-        content_disposition = response.headers.get("Content-Disposition")
-        filename = None
-        if content_disposition:
-            # Example: content-disposition: inline; filename="somefile.webp"
-            match = re.search(r'filename="(?P<filename>[^"]+)"', content_disposition)
-            if match:
-                filename = match.group("filename")
+        # Derive filename from Content-Disposition or fallback to URL basename
+        cd = resp.headers.get("Content-Disposition", "")
+        m = re.search(r'filename="([^"]+)"', cd)
+        filename = m.group(1) if m else os.path.basename(url)
 
-        # Use the last part of the URL as a fallback filename
-        if not filename:
-            filename = url.split("/")[-1]
+        os.makedirs(save_dir, exist_ok=True)
+        path = os.path.join(save_dir, filename)
 
-        save_path = os.path.join(DOWNLOAD_DIR, filename)
-        with open(save_path, "wb") as f:
-            f.write(response.content)
+        with open(path, "wb") as f:
+            f.write(resp.content)
+
+        logging.info(f"✔ Saved {url} → {path}")
     except Exception as e:
-        print(f"Failed to download {url}: {e}")
+        logging.error(f"✖ Failed to download {url}: {e}")
 
 
-try:
+# --- Main execution --------------------------------------------------------
+
+
+def main():
+    # Run the SPARQL query
+    results = endpoint.query(QUERY)
+
+    # Dispatch each download into the UPRN folder
     for row in results:
         if not isinstance(row, ResultRow):
             continue
-        url = row["contentUrl"]
-        print(f"Downloading {url}...")
-        download_asset(url)
-except Exception as e:
-    print(f"Query error: {e}")
+
+        uprn_val = str(row["uprnValue"])
+        content_url = str(row["contentUrl"])
+        target_dir = os.path.join(DOWNLOAD_DIR, uprn_val)
+
+        logging.info(f"⤷ Downloading {content_url} into {target_dir}/ …")
+        download_asset(content_url, target_dir)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        logging.error(f"Error: {e}")

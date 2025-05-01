@@ -76,4 +76,3 @@ The API implements rate limiting. If your rate limit is exceeded, you'll receive
 - Ensure your API key is kept secure and never exposed publicly.
 - API keys are not stored by xRI on disk. Once a key is generated make sure you store this securely as it cannot be retrieved again.
 - Contact support for assistance or to resolve quota-related issues.
-

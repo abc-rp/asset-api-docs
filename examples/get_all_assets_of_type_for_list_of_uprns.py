@@ -1,18 +1,26 @@
+import logging
 import os
-import httpx
 import re
+
+import httpx
 from rdflib.plugins.stores.sparqlstore import SPARQLStore
 from rdflib.query import ResultRow
 
-# Connect to the SPARQL endpoint (ensuring all the .ttl files are loaded into the triplestore)
-DB_URL = "http://localhost:3030/dob-subset-14-04-25/query"
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+# --- Configuration ---------------------------------------------------------
+
+# SPARQL endpoint
+DB_URL = "http://ec2-18-175-116-201.eu-west-2.compute.amazonaws.com:3030/didtriplestore/query"
 endpoint = SPARQLStore(query_endpoint=DB_URL, returnFormat="json")
 
-# Directory to save downloaded assets
+# Base download directory
 here = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_DIR = os.path.join(here, "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
 
 # Assets can be of the following types:
 # - Merged lidar point clouds: https://w3id.org/dob/id/lidar-pointcloud-merged
@@ -27,82 +35,89 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 # - IR temperature array: https://w3id.org/dob/id/ir-temperature-array
 # - IR counts: https://w3id.org/dob/id/ir-count-image
 # - RBG image: https://w3id.org/dob/id/rgb-image
-# If using prefixes you can write the above IRIs as dob:ENTITY
-# e.g. dob:lidar-pointcloud-merged
 
-# Comma separated list of UPRNs (you must leave a space after the comma)
+# Which UPRNs and which enums (types) to pull
 UPRNs = "200003455212, 5045394"
-# Types of assets to filter on
-TYPES = "did:rgb-image, did:lidar-pointcloud-merged"
-# Define the query
+TYPES = "did:rgb-image, did:lidar-pointcloud-merged, did:ir-temperature-array"
+
+# --- SPARQL: find any resource with your enum & contentUrl, then crawl back to UPRN ---
 QUERY = f"""
-PREFIX dob: <https://w3id.org/dob/voc#>
+PREFIX dob:  <https://w3id.org/dob/voc#>
 PREFIX sosa: <http://www.w3.org/ns/sosa/>
-PREFIX so: <http://schema.org/>
-PREFIX owl: <http://www.w3.org/2002/07/owl#>
-PREFIX did: <https://w3id.org/dob/id/>
+PREFIX so:   <http://schema.org/>
+PREFIX prov: <http://www.w3.org/ns/prov#>
+PREFIX did:  <https://w3id.org/dob/id/>
 
-SELECT DISTINCT ?contentUrl
+SELECT DISTINCT ?uprnValue ?contentUrl
 WHERE {{
-  ?result a sosa:Result ;
-            so:contentUrl ?contentUrl ;
-            dob:typeQualifier ?enum .
+  # 1) Pick up any resource carrying the enum & contentUrl
+  ?res
+    dob:typeQualifier  ?enum ;
+    so:contentUrl      ?contentUrl .
   FILTER(?enum IN ({TYPES}))
-  ?observation a sosa:Observation ;
-            sosa:hasResult ?result ;
-            sosa:hasFeatureOfInterest ?foi .
-  ?foi a sosa:FeatureOfInterest ;
-            so:identifier ?uprn .
-   ?uprn a dob:UPRNValue ;
-           so:value ?uprnValue .
+
+  # 2) Crawl back arbitrarily through DerivedResult→Processing→Result→Observation
+  #    (and even chained DerivedResults) to get the UPRN literal
+  ?res
+    (
+    ^prov:generated   /   prov:used
+    | ^sosa:hasResult
+    )*
+    / sosa:hasFeatureOfInterest
+    / so:identifier
+    / so:value
+    ?uprnValue .
+
+  # 3) Only the UPRNs you care about
   FILTER(?uprnValue IN ({UPRNs}))
-}}"""
+}}
+"""
 
-
+# Your API key from environment
 API_KEY = os.getenv("API_KEY")
 if not API_KEY:
-    raise ValueError(
-        "API_KEY environment variable is not set. Please set it to your API key."
-    )
+    raise RuntimeError("API_KEY environment variable is not set.")
 
-# Run the query
-results = endpoint.query(QUERY)
+# --- Download helper -------------------------------------------------------
 
 
-# A simple synchronous fetch function
-def download_asset(url):
-    # You can parallelise this with asyncio but be careful with the number of concurrent requests
-    # so that you stay within the rate limits
+def download_asset(url: str, save_dir: str) -> None:
     try:
-        response = httpx.get(url, headers={"x-api-key": API_KEY})
-        response.raise_for_status()  # Raise an error for bad responses
+        resp = httpx.get(url, headers={"x-api-key": API_KEY}, timeout=60)
+        resp.raise_for_status()
 
-        # Try to get the filename from the content-disposition header
-        content_disposition = response.headers.get("Content-Disposition")
-        filename = None
-        if content_disposition:
-            # Example: content-disposition: inline; filename="somefile.webp"
-            match = re.search(r'filename="(?P<filename>[^"]+)"', content_disposition)
-            if match:
-                filename = match.group("filename")
+        # Derive filename
+        cd = resp.headers.get("Content-Disposition", "")
+        m = re.search(r'filename="([^"]+)"', cd)
+        fn = m.group(1) if m else os.path.basename(url)
 
-        # Use the last part of the URL as a fallback filename
-        if not filename:
-            filename = url.split("/")[-1]
+        os.makedirs(save_dir, exist_ok=True)
+        path = os.path.join(save_dir, fn)
+        with open(path, "wb") as f:
+            f.write(resp.content)
 
-        save_path = os.path.join(DOWNLOAD_DIR, filename)
-        with open(save_path, "wb") as f:
-            f.write(response.content)
+        logging.info(f"✔ {url} → {path}")
     except Exception as e:
-        print(f"Failed to download {url}: {e}")
+        logging.error(f"✖ Failed {url}: {e}")
 
 
-try:
+# --- Main ------------------------------------------------------------------
+
+
+def main():
+    results = endpoint.query(QUERY)
+
     for row in results:
         if not isinstance(row, ResultRow):
             continue
-        url = row["contentUrl"]
-        print(f"Downloading {url}...")
-        download_asset(url)
-except Exception as e:
-    print(f"Query error: {e}")
+
+        uprn = str(row["uprnValue"])
+        url = str(row["contentUrl"])
+        folder = os.path.join(DOWNLOAD_DIR, uprn)
+
+        logging.info(f"Downloading into {folder}/  ←  {url}")
+        download_asset(url, folder)
+
+
+if __name__ == "__main__":
+    main()
