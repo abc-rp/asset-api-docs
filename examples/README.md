@@ -115,13 +115,13 @@ python3 br_decompress.py --directory ./downloads
 
 ```bash
 # Single UPRN
-python3 query_assist.py --uprn 5045394
+python3 query_assist.py --uprn 100023334911
 
 # Multiple UPRNs (space-separated)
-python3 query_assist.py --uprn 200003455212 5045394
+python3 query_assist.py --uprn 100023334911 100023268138
 
 # Multiple UPRNs (comma-separated)
-python3 query_assist.py --uprn 200003455212, 5045394, 45127845
+python3 query_assist.py --uprn 100023334911 100023268138 46251044
 
 # CSV-only for UPRNs
 python3 query_assist.py --uprn path/to/uprns.csv
