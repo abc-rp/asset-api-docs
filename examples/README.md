@@ -121,7 +121,7 @@ python3 query_assist.py --uprn 100023334911
 python3 query_assist.py --uprn 100023334911 100023268138
 
 # Multiple UPRNs (comma-separated)
-python3 query_assist.py --uprn 100023334911 100023268138 46251044
+python3 query_assist.py --uprn 100023334911, 100023268138, 46251044
 
 # CSV-only for UPRNs
 python3 query_assist.py --uprn path/to/uprns.csv
