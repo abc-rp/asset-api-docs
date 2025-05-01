@@ -107,6 +107,10 @@ brew install brotli
 
 Or using the `br_decompress.py` script.
 
+```bash
+python3 br_decompress.py --directotry ./downloads
+```
+
 #### `query_assist.py` Usage
 
 ```bash
