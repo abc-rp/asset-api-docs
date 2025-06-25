@@ -70,40 +70,44 @@ def load_column_from_csv(path, column):
     return values
 
 
+def asset_subdir(enum_iri: str) -> str:
+    """
+    Convert an asset type IRI such as 'did:lidar-pointcloud-merged'
+    into a safe sub-directory name, e.g. 'lidar-pointcloud-merged'.
+    """
+    name = enum_iri.split("/")[-1]
+    if name.startswith("did:"):
+        name = name[len("did:") :]
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+
+
 def build_asset_query(uprn_list, args):
     prefixes = """
-PREFIX did:   <https://w3id.org/dob/id/>
-PREFIX dob:   <https://w3id.org/dob/voc#>
-PREFIX so:    <http://schema.org/>
-PREFIX sosa:  <http://www.w3.org/ns/sosa/>
-PREFIX prov:  <http://www.w3.org/ns/prov#>
-PREFIX bess:  <https://w3id.org/bess/voc#>
-"""
-    select = "SELECT DISTINCT ?uprnValue ?contentUrl\n"
+    PREFIX did:   <https://w3id.org/dob/id/>
+    PREFIX dob:   <https://w3id.org/dob/voc#>
+    PREFIX so:    <http://schema.org/>
+    PREFIX sosa:  <http://www.w3.org/ns/sosa/>
+    PREFIX prov:  <http://www.w3.org/ns/prov#>
+    """
+    select = "SELECT DISTINCT ?uprnValue ?contentUrl ?enum\n"
     where = [
         "  ?res so:contentUrl ?contentUrl .",
+        "  ?res dob:typeQualifier ?enum .",  # ① now unconditional
+        "  ?res ( ^sosa:hasResult | ^prov:generated / prov:used )* ?obs .",
+        "  ?obs a sosa:Observation ;",
+        "       sosa:hasFeatureOfInterest ?foi .",
+        "  ?foi so:identifier ?uprnRes .",
+        "  ?uprnRes a dob:UPRNValue ; so:value ?uprnValue .",
     ]
-    if args.types:
-        where.append("  ?res dob:typeQualifier ?enum .")
-    where.append("  ?res ( ^sosa:hasResult | ^prov:generated / prov:used )* ?obs .")
-    where.extend(
-        [
-            "  ?obs a sosa:Observation ;",
-            "       sosa:madeBySensor ?sensor ;",
-            "       sosa:hasFeatureOfInterest ?foi .",
-            "  ?foi so:identifier ?uprnRes .",
-            "  ?uprnRes a dob:UPRNValue ;",
-            "           so:value ?uprnValue .",
-        ]
-    )
     if args.sensor:
-        where.append(f"  ?sensor a {args.sensor} .")
+        where.append(f"  ?obs sosa:madeBySensor {args.sensor} .")
+
     quoted = ", ".join(f'"{u}"' for u in uprn_list)
     where.append(f"  FILTER(str(?uprnValue) IN ({quoted}))")
     if args.types:
         where.append(f"  FILTER(?enum IN ({args.types}))")
-    query = prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}"
-    return query
+
+    return prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}"
 
 
 def build_output_area_query(area_list):
@@ -256,8 +260,12 @@ def main():
         for row in res:
             uprn_val = str(row["uprnValue"])
             url = str(row["contentUrl"])
-            tgt_dir = os.path.join(download_base, uprn_val)
+            enum_iri = str(row["enum"])
+            subdir = asset_subdir(enum_iri)
+
+            tgt_dir = os.path.join(download_base, uprn_val, subdir)
             logging.info(f"⤷ Downloading {url} into {tgt_dir}/")
+
             download_asset(url, tgt_dir, api_key)
 
 
