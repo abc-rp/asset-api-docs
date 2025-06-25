@@ -3,10 +3,6 @@ from types import SimpleNamespace
 import pytest
 import query_assist as qa
 
-# ---------------------------------------------------------------------------
-# Pure helpers
-# ---------------------------------------------------------------------------
-
 
 @pytest.mark.parametrize(
     "iri, expected",
@@ -34,11 +30,6 @@ def test_load_column_from_csv_missing_col(tmp_path):
         qa.load_column_from_csv(csv_file, "uprn")
 
 
-# ---------------------------------------------------------------------------
-# Query builders – make sure the critical bits land in the SPARQL
-# ---------------------------------------------------------------------------
-
-
 def test_build_asset_query_injects_everything():
     args = SimpleNamespace(sensor="bess:OusterLidarSensor", types="did:rgb-image")
     q = qa.build_asset_query(["123"], args)
@@ -59,18 +50,13 @@ def test_build_ods_to_uprn_query_values_clause():
     assert 'VALUES ?odsValue { "00ABC" "99XYZ" }' in q
 
 
-# ---------------------------------------------------------------------------
-# CLI integration: download path logic and error handling
-# ---------------------------------------------------------------------------
-
-
 def _dummy_http_response():
     class _R:
         status_code = 200
         headers = {"Content-Disposition": 'attachment; filename="file.bin"'}
         content = b"PSEUDO-BINARY"
 
-        def raise_for_status(self):  # noqa: D401
+        def raise_for_status(self):
             pass
 
     return _R()
@@ -114,7 +100,6 @@ def test_cli_download_creates_nested_dir(tmp_path, monkeypatch):
         ),
     )
 
-    # run main()
     qa.main()
 
     expected = tmp_path / "42" / "rgb-image" / "file.bin"
