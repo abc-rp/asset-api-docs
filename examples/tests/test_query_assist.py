@@ -1,10 +1,11 @@
-# bin/env python3
-
 from types import SimpleNamespace
 
 import pytest
+import query_assist as qa
 
-from examples import query_assist as qa
+# ---------------------------------------------------------------------------
+# Pure helpers
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -69,7 +70,7 @@ def _dummy_http_response():
         headers = {"Content-Disposition": 'attachment; filename="file.bin"'}
         content = b"PSEUDO-BINARY"
 
-        def raise_for_status(self):
+        def raise_for_status(self):  # noqa: D401
             pass
 
     return _R()
@@ -113,6 +114,7 @@ def test_cli_download_creates_nested_dir(tmp_path, monkeypatch):
         ),
     )
 
+    # run main()
     qa.main()
 
     expected = tmp_path / "42" / "rgb-image" / "file.bin"
