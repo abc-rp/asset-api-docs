@@ -1,103 +1,142 @@
-"""
-Unit-tests for query_assist.py
-Run with:   pytest -q
-"""
-import sys
-from pathlib import Path
+# bin/env python3
+
 from types import SimpleNamespace
 
 import pytest
-import query_assist as qa
 
-# ---------- pure helpers -------------------------------------------------- #
+from examples import query_assist as qa
 
 
 @pytest.mark.parametrize(
     "iri, expected",
     [
         ("did:lidar-pointcloud-merged", "lidar-pointcloud-merged"),
-        ("https://w3id.org/dob/voc/did:rgb-image", "rgb-image"),
+        ("https://w3id.org/foo/did:rgb-image", "rgb-image"),
         ("did:ir-false-color-image", "ir-false-color-image"),
+        ("did:weird chars!*£$", "weird_chars____"),  # sanitised
     ],
 )
 def test_asset_subdir(iri, expected):
-    """`asset_subdir` should strip `did:` and leave only safe chars."""
     assert qa.asset_subdir(iri) == expected
 
 
-def test_build_asset_query_filters_are_injected():
-    """
-    The generated SPARQL must contain the sensor/type filters that
-    the CLI flags would inject.
-    """
+def test_load_column_from_csv_good(tmp_path):
+    csv_file = tmp_path / "uprns.csv"
+    csv_file.write_text("uprn\n1\n2\n\n3\n")
+    assert qa.load_column_from_csv(csv_file, "uprn") == ["1", "2", "3"]
+
+
+def test_load_column_from_csv_missing_col(tmp_path):
+    csv_file = tmp_path / "bad.csv"
+    csv_file.write_text("not_uprn\n123\n")
+    with pytest.raises(RuntimeError, match="missing required 'uprn'"):
+        qa.load_column_from_csv(csv_file, "uprn")
+
+
+# ---------------------------------------------------------------------------
+# Query builders – make sure the critical bits land in the SPARQL
+# ---------------------------------------------------------------------------
+
+
+def test_build_asset_query_injects_everything():
     args = SimpleNamespace(sensor="bess:OusterLidarSensor", types="did:rgb-image")
-    query = qa.build_asset_query(["123"], args)
-    assert "bess:OusterLidarSensor" in query  # sensor filter
-    assert "did:rgb-image" in query  # type filter
-    assert '"123"' in query  # UPRN filter
+    q = qa.build_asset_query(["123"], args)
+    assert "bess:OusterLidarSensor" in q
+    assert "did:rgb-image" in q
+    assert '"123"' in q
+    # should ALWAYS bind ?enum
+    assert "?enum" in q and "dob:typeQualifier" in q
 
 
-# ---------- download path logic ------------------------------------------- #
+def test_build_output_area_query_formats_values():
+    q = qa.build_output_area_query(["sid:E0001"])
+    assert "VALUES ?outputArea { sid:E0001 }" in q
 
 
-def _dummy_response(tmp_path):
-    class _Resp:
+def test_build_ods_to_uprn_query_values_clause():
+    q = qa.build_ods_to_uprn_query(["00ABC", "99XYZ"])
+    assert 'VALUES ?odsValue { "00ABC" "99XYZ" }' in q
+
+
+# ---------------------------------------------------------------------------
+# CLI integration: download path logic and error handling
+# ---------------------------------------------------------------------------
+
+
+def _dummy_http_response():
+    class _R:
         status_code = 200
         headers = {"Content-Disposition": 'attachment; filename="file.bin"'}
-        content = b"UNIT-TEST"
+        content = b"PSEUDO-BINARY"
 
-        def raise_for_status(self):  # noqa: D401
+        def raise_for_status(self):
             pass
 
-    return _Resp()
+    return _R()
 
 
-def test_download_flow_creates_nested_dirs(tmp_path, monkeypatch):
-    """
-    Integration-style test: simulate `--uprn 42` download with one RGB asset.
-    Ensures that the target folder becomes `<tmp>/downloads/42/rgb-image/file.bin`.
-    """
+class _DummyStore:
+    """Stand-in for rdflib SPARQLStore; returns a synthetic row list."""
 
-    # ---- stub external dependencies --------------------------------------
-    class DummyStore:
-        def __init__(self, *a, **k):
-            pass
+    def __init__(self, *a, **k):
+        pass
 
-        def query(self, *_):
-            return [
-                {
-                    "uprnValue": "42",
-                    "contentUrl": "https://example.com/file.bin",
-                    "enum": "did:rgb-image",
-                }
-            ]
+    def query(self, *_):
+        return [
+            {
+                "uprnValue": "42",
+                "contentUrl": "https://example.com/file.bin",
+                "enum": "did:rgb-image",
+            }
+        ]
 
-    monkeypatch.setattr(qa, "SPARQLStore", DummyStore)
-    monkeypatch.setattr(qa.httpx, "get", lambda *a, **k: _dummy_response(tmp_path))
-    monkeypatch.setenv("API_KEY", "DUMMY")
 
-    # ---- invoke CLI entry-point ------------------------------------------
-    argv_backup, sys.argv = sys.argv, [
-        "query_assist",
-        "--uprn",
-        "42",
-        "--download-dir",
-        str(tmp_path),
-    ]
-    try:
+def test_cli_download_creates_nested_dir(tmp_path, monkeypatch):
+    """Full happy-path run – ensures <download-dir>/<uprn>/<type>/file.bin is created."""
+    monkeypatch.setattr(qa, "SPARQLStore", _DummyStore)
+    monkeypatch.setattr(qa.httpx, "get", lambda *a, **k: _dummy_http_response())
+    monkeypatch.setenv("API_KEY", "FAKE-KEY")
+
+    argv = ["query_assist", "--uprn", "42", "--download-dir", str(tmp_path)]
+    monkeypatch.setattr(
+        qa,
+        "parse_args",
+        lambda: qa.argparse.Namespace(
+            uprn=["42"],
+            ods=None,
+            sensor=None,
+            types=None,
+            output_area=None,
+            db_url="http://dummy",
+            download_dir=str(tmp_path),
+            api_key_env="API_KEY",
+        ),
+    )
+
+    qa.main()
+
+    expected = tmp_path / "42" / "rgb-image" / "file.bin"
+    assert expected.is_file(), f"expected {expected} to exist"
+
+
+def test_cli_fails_without_api_key(monkeypatch):
+    """Main should raise RuntimeError if API_KEY env var is missing."""
+    monkeypatch.setattr(qa, "SPARQLStore", _DummyStore)
+    monkeypatch.delenv("API_KEY", raising=False)
+
+    monkeypatch.setattr(
+        qa,
+        "parse_args",
+        lambda: qa.argparse.Namespace(
+            uprn=["1"],
+            ods=None,
+            sensor=None,
+            types=None,
+            output_area=None,
+            db_url="http://dummy",
+            download_dir=None,
+            api_key_env="API_KEY",
+        ),
+    )
+    with pytest.raises(RuntimeError, match="Env var 'API_KEY' is not set"):
         qa.main()
-    finally:
-        sys.argv = argv_backup
-
-    # ---- assert folder structure -----------------------------------------
-    target = Path(tmp_path) / "42" / "rgb-image" / "file.bin"
-    assert target.is_file(), f"expected {target} to be written"
-
-
-# ---------- CSV helper ---------------------------------------------------- #
-
-
-def test_load_column_from_csv(tmp_path):
-    csv_path = tmp_path / "sample.csv"
-    csv_path.write_text("uprn\n1\n2\n\n3\n")
-    assert qa.load_column_from_csv(csv_path, "uprn") == ["1", "2", "3"]
