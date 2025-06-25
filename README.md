@@ -1,3 +1,4 @@
+[![tests](https://github.com/abc-rp/asset-api-docs/actions/workflows/tests.yaml/badge.svg)](https://github.com/abc-rp/asset-api-docs/actions/workflows/tests.yaml) [![format](https://github.com/abc-rp/asset-api-docs/actions/workflows/format.yaml/badge.svg)](https://github.com/abc-rp/asset-api-docs/actions/workflows/format.yaml)
 
 # xRI Asset API (didapi.io)
 
