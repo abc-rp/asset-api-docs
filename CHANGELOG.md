@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add a `CHANGELOG.md` file for ckear documentation of the development of the asset-api.
 
 ### Changed
-- Refactor the query_assist.py output folder structure for dates of obersvations.
+- Refactor the query_assist.py output folder structure for dates of observations.
 
 ---
 
