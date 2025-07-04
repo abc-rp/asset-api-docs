@@ -85,7 +85,7 @@ def asset_subdir(enum_iri: str) -> str:
 
 
 def build_asset_query(uprn_list, args):
-    """Builds the SPARQL query to fetch asset data including result times."""
+    """Builds the SPARQL query to fetch asset data including phenomenon times."""
     prefixes = """
     PREFIX did:   <https://w3id.org/dob/id/>
     PREFIX dob:   <https://w3id.org/dob/voc#>
@@ -94,13 +94,13 @@ def build_asset_query(uprn_list, args):
     PREFIX prov:  <http://www.w3.org/ns/prov#>
     PREFIX xsd:   <http://www.w3.org/2001/XMLSchema#>
     """
-    select = "SELECT DISTINCT ?uprnValue ?contentUrl ?enum ?resultTime\n"
+    select = "SELECT DISTINCT ?uprnValue ?contentUrl ?enum ?phenomenonTime\n"
     where = [
         "  ?res so:contentUrl ?contentUrl .",
         "  ?res dob:typeQualifier ?enum .",
-        "  ?res sosa:resultTime ?resultTime .",
         "  ?res ( ^sosa:hasResult | ^prov:generated / prov:used )* ?obs .",
         "  ?obs a sosa:Observation ;",
+        "       sosa:phenomenonTime ?phenomenonTime ;",
         "       sosa:hasFeatureOfInterest ?foi .",
         "  ?foi so:identifier ?uprnRes .",
         "  ?uprnRes a dob:UPRNValue ; so:value ?uprnValue .",
@@ -290,17 +290,15 @@ def main():
                 url = str(row["contentUrl"])
                 enum_iri = str(row["enum"])
 
-                # rdflib automatically parses xsd:dateTime into a Python datetime object
-                result_time_obj = row["resultTime"].value
-                if isinstance(result_time_obj, datetime):
-                    date_str = result_time_obj.strftime("%Y-%m-%d")
+                phenomenon_time_obj = row["phenomenonTime"].value
+                if isinstance(phenomenon_time_obj, datetime):
+                    date_str = phenomenon_time_obj.strftime("%Y-%m-%d")
                 else:
                     # Fallback for unexpected date formats
-                    date_str = str(result_time_obj).split("T")[0]
+                    date_str = str(phenomenon_time_obj).split("T")[0]
 
                 asset_type_subdir = asset_subdir(enum_iri)
 
-                # Construct the new directory structure: <base>/<uprn>/<date>/<asset_type>/
                 tgt_dir = os.path.join(
                     download_base, uprn_val, date_str, asset_type_subdir
                 )
