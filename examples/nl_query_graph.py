@@ -1,25 +1,17 @@
 #!/usr/bin/env python3
 """
-nl_query_graph.py — LLM-only planner, plan-first, two-stage ODS
+nl_query_graph.py — LLM-only planner, plan-first, OA/ODS→assets, supports direct UPRN
 
-A lean rewrite of the previous LangGraph CLI that:
-- Prints the plan FIRST (and ONLY when running at INFO, i.e., with -v)
-- Uses an LLM-only planner (no heuristics) with a stronger prompt
-- Guarantees a two-stage plan for ODS/Output Area when the request implies assets
-- Keeps dry-run and plan-only modes
-- Preserves artifact detection (CSV) and feeds them into download steps
-- Adds robust retries and graceful fallback when Ollama returns empty/invalid content
-- Understands both Ollama-native and OpenAI-style response shapes (choices[0].message.content)
+Fixes:
+- Correct LangGraph conditional mapping: return label strings ("execute"/"end")
+  and map {"execute": "execute", "end": END}. This eliminates the infinite loop.
+- Remove the external invoke loop; let LangGraph run to END in a single invoke.
+- Allow single-step plans when UPRNs are provided directly in the NL query.
+- Keep CSV auto-handoff and robust Ollama fallback (/api/chat then /api/generate).
 
-Requirements:
-  pip install langgraph requests
-
-Notes:
-- We keep LangGraph for structure/checkpointing, but we do not auto-run it before
-  printing the plan. We explicitly call plan -> print -> execute.
-- The LLM prompt is opinionated to produce two steps when the user asks for
-  assets, even if types are not specified (types omitted === all types).
+Requirements: pip install langgraph requests
 """
+
 from __future__ import annotations
 
 import argparse
@@ -33,17 +25,15 @@ import subprocess
 import sys
 import textwrap
 import time
-from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict
 
-# Third-party
 import requests
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-# ============================================================================
-# Strong LLM planning prompt (LLM-only)
-# ============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# Planner prompt
+# ─────────────────────────────────────────────────────────────────────────────
 PLAN_SYSTEM_PROMPT = r"""
 You are a planning assistant that converts a natural language request about
 retrieving built environment asset data into an ordered execution plan for
@@ -97,9 +87,9 @@ Do not include any prose. Output the JSON object only.
 """
 
 
-# ============================================================================
-# Types & State
-# ============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# Types
+# ─────────────────────────────────────────────────────────────────────────────
 class StepSpec(TypedDict, total=False):
     command: Literal["download_assets", "ods_to_uprn", "uprns_by_output_area"]
     uprn: list[str] | str | None
@@ -113,34 +103,31 @@ class StepSpec(TypedDict, total=False):
     uprn_from_previous_csvs: bool
 
 
-@dataclass
-class WFState:
+class WFState(TypedDict, total=False):
     nl: str
-    plan: list[StepSpec] = field(default_factory=list)
-    current: int = 0
-    artifacts: dict[str, Any] = field(default_factory=dict)  # e.g., {"csvs": [...]}
-    log: list[str] = field(default_factory=list)
-    dry_run: bool = False
-    py_exe: str = sys.executable
-    qa_path: str = os.path.join(os.path.dirname(__file__), "query_assist.py")
-    base_url: str = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-    model_id: str = "gpt-oss:20b"
-    temperature: float = 0.0
-    top_p: float = 0.95
-    num_predict: int = 256
-    num_ctx: int | None = None
-    keep_alive: str | None = None
-    force_json: bool = True
-    verbose_level: int = logging.INFO
-    max_steps: int = 8
+    plan: list[StepSpec]
+    current: int
+    artifacts: dict[str, Any]
+    log: list[str]
+    dry_run: bool
+    py_exe: str
+    qa_path: str
+    base_url: str
+    model_id: str
+    temperature: float
+    top_p: float
+    num_predict: int
+    num_ctx: int | None
+    keep_alive: str | None
+    force_json: bool
+    verbose_level: int
+    max_steps: int
 
 
-# ============================================================================
-# LLM plumbing (robust to sparse/odd Ollama responses)
-# ============================================================================
-
-
-def _post_ollama(
+# ─────────────────────────────────────────────────────────────────────────────
+# Ollama client (robust)
+# ─────────────────────────────────────────────────────────────────────────────
+def _ollama_chat(
     base_url: str, payload: dict[str, Any], timeout_s: float = 120.0
 ) -> dict[str, Any]:
     url = base_url.rstrip("/") + "/api/chat"
@@ -149,31 +136,20 @@ def _post_ollama(
     return r.json()
 
 
-def _extract_first_json(text: str) -> dict | None:
-    start = text.find("{")
-    if start == -1:
-        return None
-    depth = 0
-    for i, c in enumerate(text[start:], start=start):
-        if c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(text[start : i + 1])
-                except Exception:
-                    return None
-    return None
+def _ollama_generate(
+    base_url: str, payload: dict[str, Any], timeout_s: float = 120.0
+) -> dict[str, Any]:
+    url = base_url.rstrip("/") + "/api/generate"
+    r = requests.post(url, json=payload, timeout=(5.0, timeout_s))
+    r.raise_for_status()
+    return r.json()
 
 
 def _extract_content_variants(resp: dict[str, Any]) -> str:
-    # Try common shapes returned by Ollama and proxies
     if isinstance(resp.get("message"), dict):
         c = resp["message"].get("content")
         if c:
             return c
-    # OpenAI/vLLM/LM Studio style
     choices = resp.get("choices")
     if isinstance(choices, list) and choices:
         first = choices[0] or {}
@@ -181,15 +157,12 @@ def _extract_content_variants(resp: dict[str, Any]) -> str:
         c = msg.get("content") or first.get("text")
         if isinstance(c, str) and c:
             return c
-    # Some servers use top-level 'response'
     c = resp.get("response")
     if isinstance(c, str) and c:
         return c
-    # Rare: top-level 'content'
     c = resp.get("content")
     if isinstance(c, str) and c:
         return c
-    # Some wrappers return {'messages': [{'content': ...}]}
     msgs = resp.get("messages")
     if isinstance(msgs, list) and msgs and isinstance(msgs[-1], dict):
         c = msgs[-1].get("content")
@@ -198,25 +171,48 @@ def _extract_content_variants(resp: dict[str, Any]) -> str:
     return ""
 
 
-def ollama_chat(
+def _extract_first_json(text: str) -> dict | None:
+    if not isinstance(text, str):
+        return None
+    s = text.find("{")
+    if s == -1:
+        return None
+    depth = 0
+    for i, ch in enumerate(text[s:], start=s):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[s : i + 1])
+                except Exception:
+                    return None
+    return None
+
+
+def ollama_plan(
+    *,
     base_url: str,
     model: str,
-    messages: list[dict[str, str]],
-    *,
-    temperature: float = 0.0,
-    top_p: float = 0.95,
-    num_predict: int = 256,
-    num_ctx: int | None = None,
-    keep_alive: str | None = None,
-    force_json: bool = True,
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float,
+    top_p: float,
+    num_predict: int,
+    num_ctx: int | None,
+    keep_alive: str | None,
+    force_json: bool,
     timeout_s: float = 120.0,
     retries: int = 2,
-    logger: logging.Logger | None = None,
 ) -> str:
-    """Return assistant content as a string. Retries with/without JSON forcing."""
-    last_err: Exception | None = None
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    # Try /api/chat with JSON then without
     for attempt in range(retries + 1):
-        payload: dict[str, Any] = {
+        payload = {
             "model": model,
             "messages": messages,
             "stream": False,
@@ -226,68 +222,74 @@ def ollama_chat(
                 "num_predict": int(num_predict),
             },
         }
-        use_json = force_json if attempt == 0 else False
         if num_ctx is not None:
             payload["options"]["num_ctx"] = int(num_ctx)
         if keep_alive:
             payload["keep_alive"] = str(keep_alive)
-        if use_json:
+        if attempt == 0 and force_json:
             payload["format"] = "json"
         try:
-            resp = _post_ollama(base_url, payload, timeout_s=timeout_s)
-            content = _extract_content_variants(resp)
-            if logger and logger.isEnabledFor(logging.DEBUG):
-                logger.debug("Ollama raw keys: %s", list(resp.keys()))
-                logger.debug("Ollama content preview: %r", content[:200])
-            if content:
-                return content
-            last_err = RuntimeError("empty content from Ollama")
-        except Exception as e:
-            last_err = e
-        # brief backoff
-        time.sleep(0.2 * (attempt + 1))
-    if last_err:
-        raise last_err
-    raise RuntimeError("Ollama returned no content.")
-
-
-def llm_plan(state: WFState) -> list[StepSpec]:
-    messages = [
-        {"role": "system", "content": PLAN_SYSTEM_PROMPT},
-        {"role": "user", "content": state.nl},
-    ]
-    # Try calling the planner; on failure, DO NOT abort. Fall through to synthesis.
+            resp = _ollama_chat(base_url, payload, timeout_s=timeout_s)
+            c = _extract_content_variants(resp)
+            if c:
+                return c
+        except Exception:
+            pass
+        time.sleep(0.15 * (attempt + 1))
+    # Fallback /api/generate
     try:
-        content = ollama_chat(
-            base_url=state.base_url,
-            model=state.model_id,
-            messages=messages,
-            temperature=state.temperature,
-            top_p=state.top_p,
-            num_predict=state.num_predict,
-            num_ctx=state.num_ctx,
-            keep_alive=state.keep_alive,
-            force_json=state.force_json,
-            retries=2,
-            logger=logging.getLogger(__name__),
+        prompt = (
+            f"<<SYS>>\n{system_prompt}\n<</SYS>>\n\nUser:\n{user_prompt}\n\nAssistant:"
         )
-    except Exception as e:
-        logging.getLogger(__name__).warning("Planner LLM call failed: %s", e)
-        content = ""
-
-    obj: dict | None
-    try:
-        obj = json.loads(content)
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": float(temperature),
+                "top_p": float(top_p),
+                "num_predict": int(num_predict),
+            },
+        }
+        if force_json:
+            payload["format"] = "json"
+        resp = _ollama_generate(base_url, payload, timeout_s=timeout_s)
+        c = _extract_content_variants(resp)
+        if c:
+            return c
     except Exception:
-        obj = _extract_first_json(content)
-    if not obj or not isinstance(obj, dict):
-        # LAST-DITCH guardrail: if the LLM truly failed to produce JSON but the NL
-        # clearly requests assets with ODS/OA, synthesize a minimal two-step plan
-        # rather than crashing. This is NOT a heuristic router; it's a fail-safe
-        # to keep execution usable when the model returns empty text.
-        lowered = state.nl.lower()
-        ods = re.findall(r"\b[A-Z]\d{5}\b", state.nl)
-        oa = re.findall(r"\bE\d{8}\b", state.nl)
+        pass
+    return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Planning
+# ─────────────────────────────────────────────────────────────────────────────
+def llm_plan(state: WFState) -> list[StepSpec]:
+    content = ollama_plan(
+        base_url=state["base_url"],
+        model=state["model_id"],
+        system_prompt=PLAN_SYSTEM_PROMPT,
+        user_prompt=state["nl"],
+        temperature=state.get("temperature", 0.0),
+        top_p=state.get("top_p", 0.95),
+        num_predict=state.get("num_predict", 256),
+        num_ctx=state.get("num_ctx"),
+        keep_alive=state.get("keep_alive"),
+        force_json=state.get("force_json", True),
+    )
+
+    obj: dict | None = None
+    if content:
+        try:
+            obj = json.loads(content)
+        except Exception:
+            obj = _extract_first_json(content)
+
+    # If LLM output is unusable, synthesize from the NL string
+    if not obj or not isinstance(obj, dict) or not isinstance(obj.get("steps"), list):
+        nl = state["nl"]
+        lowered = nl.lower()
         implies_assets = any(
             w in lowered
             for w in (
@@ -300,26 +302,29 @@ def llm_plan(state: WFState) -> list[StepSpec]:
                 "lidar",
             )
         )
-        if implies_assets and (ods or oa):
-            if ods:
-                return [
-                    {"command": "ods_to_uprn", "ods": ods},
-                    {"command": "download_assets", "uprn_from_previous_csvs": True},
-                ]
-            if oa:
-                return [
-                    {"command": "uprns_by_output_area", "output_area": oa},
-                    {"command": "download_assets", "uprn_from_previous_csvs": True},
-                ]
-        # If we get here, there is nothing actionable — report the original issue.
-        raise RuntimeError("LLM did not return a valid JSON object.")
+        # Detect UPRNs (10–14 digit sequences are typical); be conservative
+        uprns = re.findall(r"\b\d{10,14}\b", nl)
+        ods = re.findall(r"\b[A-Z]\d{5}\b", nl)
+        oa = re.findall(r"\bE\d{8}\b", nl)
+        if implies_assets and uprns:
+            return [{"command": "download_assets", "uprn": uprns}]
+        if implies_assets and ods:
+            return [
+                {"command": "ods_to_uprn", "ods": ods},
+                {"command": "download_assets", "uprn_from_previous_csvs": True},
+            ]
+        if implies_assets and oa:
+            return [
+                {"command": "uprns_by_output_area", "output_area": oa},
+                {"command": "download_assets", "uprn_from_previous_csvs": True},
+            ]
+        raise RuntimeError(
+            "Planner produced no actionable steps; provide UPRN(s), ODS or Output Area."
+        )
 
-    steps_raw = obj.get("steps")
-    if not isinstance(steps_raw, list) or not steps_raw:
-        raise RuntimeError("LLM returned an empty steps list.")
-
+    # Normalize steps from LLM JSON
     steps: list[StepSpec] = []
-    for s in steps_raw:
+    for s in obj["steps"]:
         if not isinstance(s, dict):
             continue
         cmd = s.get("command")
@@ -341,35 +346,34 @@ def llm_plan(state: WFState) -> list[StepSpec]:
                 step[key] = s[key]  # type: ignore[index]
         steps.append(step)
 
-    # Ensure two-stage plan if assets implied
-    lowered = state.nl.lower()
+    # Enforce download step only when a mapping step exists (don’t force for direct UPRN)
+    lowered = state["nl"].lower()
     implies_assets = any(
         w in lowered
-        for w in ["asset", "assets", "download", "point cloud", "rgb", "image", "lidar"]
+        for w in ("asset", "assets", "download", "point cloud", "rgb", "image", "lidar")
     )
     has_mapping = any(
         st.get("command") in {"ods_to_uprn", "uprns_by_output_area"} for st in steps
     )
     has_download = any(st.get("command") == "download_assets" for st in steps)
     if implies_assets and has_mapping and not has_download:
-        steps.append(
-            {
-                "command": "download_assets",
-                "uprn_from_previous_csvs": True,
-            }
-        )
+        steps.append({"command": "download_assets", "uprn_from_previous_csvs": True})
+
+    # If a download step exists but lacks UPRNs, consume prior CSVs
+    for st in steps:
+        if st.get("command") == "download_assets" and not st.get("uprn"):
+            st["uprn_from_previous_csvs"] = True
 
     return steps
 
 
-# ============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
 # Execution helpers
-# ============================================================================
-
-
+# ─────────────────────────────────────────────────────────────────────────────
 def _build_argv(spec: StepSpec, py: str, qa_path: str) -> list[str]:
-    cmd = [sys.executable if not py else py, qa_path]
+    cmd = [py or sys.executable, qa_path]
     command = spec.get("command")
+
     if command == "download_assets":
         uprn = spec.get("uprn")
         if isinstance(uprn, list):
@@ -378,7 +382,7 @@ def _build_argv(spec: StepSpec, py: str, qa_path: str) -> list[str]:
             uprn_list = [uprn]
         else:
             raise ValueError(
-                "download_assets requires 'uprn' unless 'uprn_from_previous_csvs' is used earlier."
+                "download_assets requires 'uprn' unless 'uprn_from_previous_csvs' is set."
             )
         cmd += ["--uprn"] + uprn_list
         if spec.get("sensor"):
@@ -422,116 +426,122 @@ def run_query_assist_step(
     dry_run: bool,
     env: dict[str, str] | None = None,
 ) -> tuple[int, str]:
-    """Execute a single step via subprocess, stream logs, and return (rc, captured_text)."""
     argv = _build_argv(step, py_exe, qa_path)
     printable = " ".join(shlex.quote(x) for x in argv)
+    logging.info("Executing step: %s", json.dumps(step, ensure_ascii=False))
     logging.info("Command: %s", printable)
     if dry_run:
         return 0, f"[dry-run] {printable}\n"
 
-    p = subprocess.Popen(
-        argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env
-    )
-    captured_lines: list[str] = []
     try:
-        assert p.stdout is not None
-        for line in p.stdout:
-            sys.stdout.write(line)
-            captured_lines.append(line)
-    finally:
-        rc = p.wait()
-    return rc, "".join(captured_lines)
+        p = subprocess.Popen(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env
+        )
+    except FileNotFoundError as e:
+        return 127, f"[spawn-failed] {e}\n"
+    except Exception as e:
+        return 1, f"[spawn-failed] {e}\n"
+
+    captured: list[str] = []
+    assert p.stdout is not None
+    for line in p.stdout:
+        sys.stdout.write(line)  # stream-through to console
+        captured.append(line)
+    rc = p.wait()
+    return rc, "".join(captured)
 
 
-def _find_csvs_emitted(stream_text: str) -> list[str]:
-    """Parse query_assist.py logs to discover created CSVs."""
-    csvs: list[str] = []
-    patterns = [
-        r"Saved CSV for .*? → ([^\s]+\.csv)",
-        r"Saved CSV for .*? -> ([^\s]+\.csv)",
-        r"Saved ODS.?UPRN CSV .*? → ([^\s]+\.csv)",
-        r"Saved ODS.?UPRN CSV .*? -> ([^\s]+\.csv)",
+def _find_csvs_emitted(text: str) -> list[str]:
+    pats = [
+        r"✔?\s*Saved\s+(?:ODS.?→?UPRN|ODS.?to.?UPRN)\s*CSV\s*[–\-→>]\s*([^\s]+\.csv)",
+        r"✔?\s*Saved\s+(?:OA.?→?UPRN|OA.?to.?UPRN|Output\s*Area.?→?UPRN)\s*CSV\s*[–\-→>]\s*([^\s]+\.csv)",
+        r"Saved\s*CSV\s*for\s*.*?[–\-→>]\s*([^\s]+\.csv)",
+        r"✔\s*Saved\s*ODS.?→?UPRN\s*CSV\s*→\s*([^\s]+\.csv)",
     ]
-    for pat in patterns:
-        for m in re.finditer(pat, stream_text):
-            csvs.append(m.group(1))
-    # Deduplicate preserving order
-    seen: set[str] = set()
-    out: list[str] = []
-    for pth in csvs:
-        if pth not in seen:
-            out.append(pth)
-            seen.add(pth)
+    out, seen = [], set()
+    for pat in pats:
+        for m in re.finditer(pat, text, flags=re.IGNORECASE):
+            path = m.group(1)
+            if path not in seen:
+                out.append(path)
+                seen.add(path)
     return out
 
 
 def materialize_previous_uprn_csvs(state: WFState) -> list[str]:
-    """Return list of CSV paths produced by earlier steps."""
-    from_logs = state.artifacts.get("csvs", [])
+    from_logs = state.get("artifacts", {}).get("csvs", [])
     if from_logs:
-        return from_logs
-    # Fallback: common default path from ODS mapping
-    dl_base = os.path.join(os.getcwd(), "downloads")
-    candidate = os.path.join(dl_base, "ods_to_uprn.csv")
-    if os.path.isfile(candidate):
-        return [candidate]
-    return []
+        return list(from_logs)
+    candidates = [
+        os.path.join(os.getcwd(), "downloads", "ods_to_uprn.csv"),
+        os.path.join(os.getcwd(), "downloads", "oa_to_uprn.csv"),
+        os.path.join(os.getcwd(), "downloads", "uprns_by_output_area.csv"),
+    ]
+    return [p for p in candidates if os.path.isfile(p)]
 
 
-# ============================================================================
-# LangGraph nodes (used only for the execution loop, not for pre-plan)
-# ============================================================================
-
-
+# ─────────────────────────────────────────────────────────────────────────────
+# LangGraph nodes
+# ─────────────────────────────────────────────────────────────────────────────
 def node_execute(state: WFState) -> WFState:
-    if state.current >= len(state.plan):
-        return state
-    step = state.plan[state.current]
+    state.setdefault("artifacts", {})
+    state.setdefault("log", [])
+    state.setdefault("current", 0)
 
-    # Inject UPRNs from previous CSVs if requested
-    if step.get("uprn_from_previous_csvs"):
+    if state["current"] >= len(state.get("plan", [])):
+        return state
+
+    step: StepSpec = state["plan"][state["current"]]
+
+    # Inject CSVs for download_assets when needed
+    if step.get("command") == "download_assets" and not step.get("uprn"):
         csvs = materialize_previous_uprn_csvs(state)
-        if not csvs:
-            state.log.append("No CSVs found from previous step(s).")
-            state.current = len(state.plan)
+        if not csvs and step.get("uprn_from_previous_csvs"):
+            state["log"].append("No CSVs found from previous step(s).")
+            state["current"] = len(state["plan"])
             return state
-        step = dict(step)
-        step.pop("uprn_from_previous_csvs", None)
-        step["uprn"] = csvs
-        state.plan[state.current] = step  # persist the resolved step
+        if csvs:
+            step = dict(step)
+            step.pop("uprn_from_previous_csvs", None)
+            step["uprn"] = csvs
+            state["plan"][state["current"]] = step
 
     rc, captured = run_query_assist_step(
-        step, state.py_exe, state.qa_path, state.dry_run
+        step,
+        state.get("py_exe", sys.executable),
+        state["qa_path"],
+        state.get("dry_run", False),
     )
-    state.log.append(captured)
+    state["log"].append(captured)
 
-    newly_found = _find_csvs_emitted(captured)
-    if newly_found:
-        existing = state.artifacts.get("csvs", [])
-        state.artifacts["csvs"] = list(dict.fromkeys(existing + newly_found))
+    newly = _find_csvs_emitted(captured)
+    if newly:
+        existing = state["artifacts"].get("csvs", [])
+        state["artifacts"]["csvs"] = list(dict.fromkeys(list(existing) + newly))
 
     if rc != 0:
-        state.log.append(f"Step {state.current} returned non-zero exit {rc}.")
-        state.current = len(state.plan)
+        state["log"].append(f"Step {state['current']} returned non-zero exit {rc}.")
+        state["current"] = len(state["plan"])
     else:
-        state.current += 1
+        state["current"] += 1
     return state
 
 
 def node_check_done(state: WFState) -> str:
-    if state.current >= len(state.plan):
-        return END
-    if state.current >= state.max_steps:
-        state.log.append(f"Aborting: exceeded max_steps={state.max_steps}")
-        return END
+    # IMPORTANT: return string labels, not END sentinel
+    if state.get("current", 0) >= len(state.get("plan", [])):
+        return "end"
+    if state.get("current", 0) >= state.get("max_steps", 8):
+        state.setdefault("log", []).append(
+            f"Aborting: exceeded max_steps={state.get('max_steps', 8)}"
+        )
+        return "end"
     return "execute"
 
 
-# ============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
 # UI helpers
-# ============================================================================
-
-
+# ─────────────────────────────────────────────────────────────────────────────
 def _render_box(title: str, body: str) -> str:
     term_width = shutil.get_terminal_size(fallback=(100, 24)).columns
     max_width = max(60, min(term_width - 2, 100))
@@ -556,22 +566,17 @@ def _render_box(title: str, body: str) -> str:
 
 
 def _print_plan(plan: list[StepSpec], level: int) -> None:
-    # Print ONLY when we are at INFO (-v). Not at WARNING/DEBUG.
     if level == logging.INFO:
         print("Plan:")
         for i, step in enumerate(plan, 1):
-            step_disp = {
-                k: v for k, v in step.items() if k != "uprn_from_previous_csvs"
-            }
-            print(f"  {i}. {json.dumps(step_disp, ensure_ascii=False)}")
+            display = {k: v for k, v in step.items() if k != "uprn_from_previous_csvs"}
+            print(f"  {i}. {json.dumps(display, ensure_ascii=False)}")
         print()
 
 
-# ============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
 # CLI
-# ============================================================================
-
-
+# ─────────────────────────────────────────────────────────────────────────────
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description="LangGraph NL workflow CLI for query_assist.py (LLM-only planner)"
@@ -609,7 +614,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    # Logging level
+    # Logging
     if args.verbose >= 2:
         level = logging.DEBUG
     elif args.verbose == 1:
@@ -618,7 +623,7 @@ def main() -> None:
         level = logging.WARNING
     logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
 
-    # Intro banner (print at INFO or DEBUG)
+    # Banner
     if level <= logging.INFO:
         body = (
             "- LLM-only planner (no heuristics).\n"
@@ -628,59 +633,66 @@ def main() -> None:
         )
         print(_render_box(f"LangGraph NL Workflow — {args.model_id}", body))
 
-    # Build the LangGraph for execution loop only
-    builder = StateGraph(WFState)
+    # Build LangGraph (dict state) — IMPORTANT: label mapping uses string keys
+    builder = StateGraph(dict)
     builder.add_node("execute", node_execute)
     builder.add_edge(START, "execute")
     builder.add_conditional_edges(
-        "execute", node_check_done, {"execute": "execute", END: END}
+        "execute", node_check_done, {"execute": "execute", "end": END}
     )
     memory = MemorySaver()
     graph = builder.compile(checkpointer=memory)
 
     def run_once(nl: str) -> int:
-        st = WFState(
-            nl=nl,
-            dry_run=bool(args.dry_run),
-            qa_path=args.query_assist_path,
-            base_url=args.base_url,
-            model_id=args.model_id,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            num_predict=args.num_predict,
-            num_ctx=args.num_ctx,
-            keep_alive=args.keep_alive,
-            force_json=(not args.no_force_json),
-            verbose_level=level,
-            max_steps=args.max_steps,
-        )
+        st: WFState = {
+            "nl": nl,
+            "plan": [],
+            "current": 0,
+            "artifacts": {},
+            "log": [],
+            "dry_run": bool(args.dry_run),
+            "py_exe": sys.executable,
+            "qa_path": args.query_assist_path,
+            "base_url": args.base_url,
+            "model_id": args.model_id,
+            "temperature": args.temperature,
+            "top_p": args.top_p,
+            "num_predict": args.num_predict,
+            "num_ctx": args.num_ctx,
+            "keep_alive": args.keep_alive,
+            "force_json": (not args.no_force_json),
+            "verbose_level": level,
+            "max_steps": args.max_steps,
+        }
 
-        # === PLAN (LLM-only) ===
+        # PLAN
         try:
-            st.plan = llm_plan(st)
+            st["plan"] = llm_plan(st)
         except Exception as e:
-            logging.warning("Planning failed: %s", e)
+            logging.info("Planning failed: %s", e)
             return 1
 
-        # Print plan FIRST, ONLY at INFO
-        _print_plan(st.plan, level)
+        _print_plan(st["plan"], level)
         if args.plan_only:
             return 0
 
-        # === EXECUTE ===
-        while st.current < len(st.plan) and st.current < st.max_steps:
-            # Run the node explicitly so we fully control when execution starts
-            st = graph.invoke(
-                st, config={"configurable": {"thread_id": f"tid-{time.time_ns()}"}}
-            )
-            if node_check_done(st) == END:
-                break
+        # EXECUTE: single invoke to END (no external loop)
+        final_state = graph.invoke(
+            st, config={"configurable": {"thread_id": f"tid-{time.time_ns()}"}}
+        )
 
-        # Emit trailing notes if any
         trailing = [
             ln
-            for ln in st.log
-            if any(k in ln for k in ("[dry-run]", "No CSVs found", "non-zero exit"))
+            for ln in final_state.get("log", [])
+            if any(
+                k in ln
+                for k in (
+                    "[dry-run]",
+                    "No CSVs found",
+                    "non-zero exit",
+                    "[spawn-failed]",
+                )
+            )
         ]
         if trailing:
             print("\n".join(trailing))
@@ -704,7 +716,7 @@ def main() -> None:
                 break
             rc = run_once(nl)
             if rc != 0:
-                logging.warning("Workflow exited with code %d", rc)
+                logging.info("Workflow exited with code %d", rc)
     except KeyboardInterrupt:
         print()
         logging.info("Interrupted.")
