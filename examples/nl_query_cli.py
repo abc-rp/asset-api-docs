@@ -542,8 +542,15 @@ def _render_box(title: str, body: str) -> str:
 
 
 def _print_intro_banner(base_url: str, model_id: str) -> None:
-    intro = _fetch_model_intro(base_url, model_id)
-    banner = _render_box(f"query_assist.py Router — {model_id}", intro)
+    # Static standard description (avoid per-run model call for speed & determinism)
+    static_intro = (
+        "- Parses user queries to detect intent (download assets, convert ODS to UPRN, or fetch UPRNs by output area).\n"
+        "- Extracts key identifiers (UPRN, ODS code, output area code) from text or file paths.\n"
+        '- Maps asset type phrases (e.g., "RGB image", "merged lidar point cloud") to predefined IRIs.\n'
+        "- Fills optional parameters (sensor, download directory, API key env, SPARQL endpoint) from context or heuristics.\n"
+        "- Uses heuristics + few-shot LLM + optional summarization to build argv for query_assist.py."
+    )
+    banner = _render_box(f"query_assist.py Router — {model_id}", static_intro)
     print(banner)
     print()
 
