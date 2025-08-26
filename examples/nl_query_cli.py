@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
+
 import argparse
 import json
+import logging
 import os
 import re
 import shlex
 import subprocess
 import sys
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any
 
 import requests
+
+# -------------------------------
+# System & Summary Prompts (unchanged semantics; formatting tuned)
+# -------------------------------
 
 SYSTEM_ROUTER_PROMPT = """You are a rigorous function-call router for a Python CLI named query_assist.py.
 
@@ -59,7 +66,33 @@ Constraints:
 - Prefer being decisive. When in doubt, infer sensible defaults.
 """
 
-FEW_SHOTS: List[Tuple[str, str]] = [
+SUMMARY_SYSTEM_PROMPT = """You transform a raw natural-language user request about assets / UPRNs / ODS / output areas into a concise structured summary.
+
+Return ONLY a single JSON object with this exact schema (no prose):
+{
+    "bullets": string[]  // 2-8 short bullet points capturing intent & extracted fields
+    ,"router_text": string // ONE concise imperative sentence for a routing model to decide the command
+    ,"extracted": {       // best-effort extraction; omit keys you cannot infer
+             "uprn": string[] | null,
+             "ods": string[] | null,
+             "output_area": string[] | null,
+             "sensor": string | null,
+             "types": string[] | null,
+             "download_dir": string | null,
+             "api_key_env": string | null,
+             "db_url": string | null
+    }
+}
+
+Guidance:
+- Normalize UPRNs to digit strings.
+- Keep ordering as given when sensible.
+- For types, map descriptive phrases to IRIs per provided mapping when obvious.
+- router_text should be minimal but sufficient (e.g., "Download merged lidar point cloud for UPRN 5045394").
+- If purely informational greeting with no actionable command, set bullets to ["No actionable request"], router_text="no-op" and extracted={}.
+"""
+
+FEW_SHOTS: list[tuple[str, str]] = [
     (
         "Download the merged lidar point cloud for UPRN 5045394 into /data/assets. "
         "Use MY_KEY as the env var for the API key.",
@@ -78,7 +111,6 @@ FEW_SHOTS: List[Tuple[str, str]] = [
         '"uprn":null,"ods":null,"sensor":null,"types":null,"download_dir":null,'
         '"api_key_env":null,"db_url":null}',
     ),
-    # --- Additional diverse shots ---
     (
         "Get RGB images and merged lidar for UPRNs 5045394 and 200003455212 to /mnt/dl (API key var KEY2).",
         '{"command":"download_assets","uprn":["5045394","200003455212"],"sensor":null,'
@@ -146,31 +178,27 @@ FEW_SHOTS: List[Tuple[str, str]] = [
     ),
 ]
 
+# -------------------------------
+# Helpers
+# -------------------------------
 
-def extract_assistant_text_from_ollama(resp: Dict[str, Any]) -> str:
-    """
-    Extract the assistant's text from Ollama /api/chat or /api/generate response.
-    """
-    # Preferred: /api/chat schema
+log = logging.getLogger("nl_query_cli")
+
+
+def extract_assistant_text_from_ollama(resp: dict[str, Any]) -> str:
+    """Extract assistant text from Ollama /api/chat or /api/generate."""
     msg = resp.get("message")
     if isinstance(msg, dict):
         content = msg.get("content")
         if isinstance(content, str) and content.strip():
             return content
-
-    # Fallback: /api/generate schema
     if isinstance(resp.get("response"), str) and resp["response"].strip():
         return resp["response"]
-
-    # Last resort: stringify
     return json.dumps(resp, ensure_ascii=False)
 
 
 def slice_first_json_object(text: str) -> str:
-    """
-    Robustly extract the first top-level JSON object {...} from text.
-    Raises ValueError if none is found.
-    """
+    """Extract the first top-level JSON object {...} from text."""
     start = text.find("{")
     if start == -1:
         raise ValueError("No JSON object start found.")
@@ -185,10 +213,8 @@ def slice_first_json_object(text: str) -> str:
     raise ValueError("Unbalanced braces; JSON object not closed.")
 
 
-def ensure_list_or_path(v: Union[None, str, List[str]]) -> List[str]:
-    """
-    Convert JSON field (None | string | list) into a list of CLI tokens.
-    """
+def ensure_list_or_path(v: None | str | list[str]) -> list[str]:
+    """Convert (None | str | list) into a list of CLI tokens."""
     if v is None:
         return []
     if isinstance(v, list):
@@ -199,10 +225,8 @@ def ensure_list_or_path(v: Union[None, str, List[str]]) -> List[str]:
     return [s]
 
 
-def build_argv(spec: Dict[str, Any], py: str, qa_path: str) -> List[str]:
-    """
-    Map the JSON spec to query_assist.py argv.
-    """
+def build_argv(spec: dict[str, Any], py: str, qa_path: str) -> list[str]:
+    """Map the JSON spec to query_assist.py argv."""
     cmd = [py, qa_path]
     command = spec.get("command")
 
@@ -244,32 +268,13 @@ def build_argv(spec: Dict[str, Any], py: str, qa_path: str) -> List[str]:
     return cmd
 
 
-def print_router_help():
-    """Print brief guidance for the NL router when no command was inferred."""
-    print(
-        "[router] Expected one of the commands: download_assets | ods_to_uprn | uprns_by_output_area"
-    )
-    print("[router] Examples:")
-    print(
-        "  'Download the merged lidar point cloud for UPRN 5045394' → download_assets"
-    )
-    print("  'Map ODS G85013 to UPRNs' → ods_to_uprn")
-    print(
-        "  'List all UPRNs in output areas E00004550 and E00032882' → uprns_by_output_area"
-    )
-    print(
-        "[router] You can also be concise, e.g.: '5045394 merged lidar', 'ODS G85013', 'output areas E00004550 E00032882'."
-    )
+def heuristic_parse(nl: str) -> dict[str, Any] | None:
+    """
+    Heuristic parse for common patterns:
 
-
-# --- Heuristic parsing ---
-def heuristic_parse(nl: str) -> Union[Dict[str, Any], None]:
-    """Attempt to derive a spec dict directly from natural language without model.
-
-    Patterns handled:
-      - Output areas: presence of 'output area' or codes like E00012345
-      - ODS codes: tokens like a letter followed by 5 digits (e.g., G85013) with 'ODS' keyword
-      - UPRN asset downloads: numeric tokens length >=6 plus words like 'download', 'get', 'asset', 'lidar', 'image'
+      - Output areas: 'output area(s)' or codes E########
+      - ODS codes: tokens like A12345 (with/without "ODS")
+      - UPRN asset downloads: ≥6-digit tokens + keywords
     """
     text = nl.strip()
     if not text:
@@ -280,7 +285,13 @@ def heuristic_parse(nl: str) -> Union[Dict[str, Any], None]:
     ods_codes = re.findall(r"\b[A-Z]\d{5}\b", text)
     uprn_candidates = [t for t in re.findall(r"\b\d{6,}\b", text)]
 
-    # Output area heuristic
+    merged_pc = bool(
+        re.search(r"merged\s+(lidar\s+)?point\s*cloud", lowered)
+        or "merged lidar" in lowered
+    )
+    endpoint_match = re.search(r"(https?://[\w\.-:%/]+)", text)
+    endpoint_url = endpoint_match.group(1) if endpoint_match else None
+
     if output_area_codes and (
         "output area" in lowered
         or "output areas" in lowered
@@ -298,7 +309,6 @@ def heuristic_parse(nl: str) -> Union[Dict[str, Any], None]:
             "db_url": None,
         }
 
-    # ODS heuristic
     if ods_codes and ("ods" in lowered or not uprn_candidates):
         return {
             "command": "ods_to_uprn",
@@ -312,7 +322,6 @@ def heuristic_parse(nl: str) -> Union[Dict[str, Any], None]:
             "db_url": None,
         }
 
-    # Asset download heuristic
     asset_keywords = {
         "download",
         "get",
@@ -325,14 +334,15 @@ def heuristic_parse(nl: str) -> Union[Dict[str, Any], None]:
         "pointcloud",
     }
     if uprn_candidates and any(k in lowered for k in asset_keywords):
+        types_list = ["did:lidar-pointcloud-merged"] if merged_pc else None
         return {
             "command": "download_assets",
             "uprn": uprn_candidates,
             "sensor": None,
-            "types": None,
+            "types": types_list,
             "download_dir": None,
             "api_key_env": None,
-            "db_url": None,
+            "db_url": endpoint_url,
             "ods": None,
             "output_area": None,
         }
@@ -343,21 +353,18 @@ def heuristic_parse(nl: str) -> Union[Dict[str, Any], None]:
 def ollama_chat(
     base_url: str,
     model: str,
-    messages: List[Dict[str, str]],
+    messages: list[dict[str, str]],
     temperature: float = 0.0,
     top_p: float = 0.95,
     num_predict: int = 256,
-    num_ctx: Union[int, None] = None,
-    keep_alive: Union[str, None] = None,
+    num_ctx: int | None = None,
+    keep_alive: str | None = None,
     request_timeout_s: float = 120.0,
     force_json: bool = True,
-) -> Dict[str, Any]:
-    """
-    Call Ollama's /api/chat with given messages and decoding options.
-    Returns the parsed JSON response.
-    """
+) -> dict[str, Any]:
+    """Call Ollama's /api/chat and return parsed JSON."""
     url = base_url.rstrip("/") + "/api/chat"
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "stream": False,
@@ -372,7 +379,6 @@ def ollama_chat(
     if keep_alive:
         payload["keep_alive"] = str(keep_alive)
     if force_json:
-        # Instruct Ollama to format the assistant message as strict JSON
         payload["format"] = "json"
 
     resp = requests.post(url, json=payload, timeout=(5.0, request_timeout_s))
@@ -390,38 +396,148 @@ def run_once(
     temperature: float,
     top_p: float,
     num_predict: int,
-    num_ctx: Union[int, None],
-    keep_alive: Union[str, None],
+    num_ctx: int | None,
+    keep_alive: str | None,
     force_json: bool,
     debug_model: bool,
+    summarize: bool,
+    summary_model: str,
+    summary_temperature: float,
+    show_summary: bool,
 ) -> int:
     """
-    One-shot turn: model → JSON → construct argv → (dry) run query_assist.py.
+    One-shot turn: summarize (optional) → route spec → build argv → (dry) run query_assist.py.
+    Only DEBUG shows JSON specs and raw model content.
     """
-    # Heuristic fast-path: try to parse without model when patterns are obvious.
-    heuristic_spec = heuristic_parse(nl)
-    if heuristic_spec:
-        print("[router] Heuristic matched; bypassing model.")
-        if debug_model:
-            print(
-                f"[debug] Heuristic spec derived from input: {json.dumps(heuristic_spec)}"
+    original_nl = nl
+    log.info("Request: %s", original_nl)
+
+    # --- Summarization (independent of routing) ---
+    summary_router_text = None
+    summary_obj: dict[str, Any] | None = None
+    if summarize:
+        try:
+            sum_resp = ollama_chat(
+                base_url=base_url,
+                model=summary_model,
+                messages=[
+                    {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+                    {"role": "user", "content": nl},
+                ],
+                temperature=summary_temperature,
+                top_p=top_p,
+                num_predict=256,
+                num_ctx=num_ctx,
+                keep_alive=keep_alive,
+                force_json=True,
             )
+            if debug_model:
+                log.debug(
+                    "Summarizer raw JSON response:\n%s",
+                    json.dumps(sum_resp, indent=2, ensure_ascii=False),
+                )
+            sum_content = extract_assistant_text_from_ollama(sum_resp)
+            log.debug("Summarizer extracted content: %r", sum_content)
+
+            if sum_content.strip():
+                try:
+                    summary_obj = json.loads(sum_content)
+                except Exception:
+                    try:
+                        blob = slice_first_json_object(sum_content)
+                        summary_obj = json.loads(blob)
+                    except Exception:
+                        summary_obj = None
+
+            if not summary_obj:
+                # Heuristic fallback summary
+                fallback_bullets = []
+                uprns_fb = re.findall(r"\b\d{6,}\b", nl)
+                if uprns_fb:
+                    fallback_bullets.append(f"UPRNs: {', '.join(uprns_fb)}")
+                if "merged" in nl.lower():
+                    fallback_bullets.append("Type: merged lidar pointcloud")
+                url_fb = re.search(r"(https?://[\w\.-:%/]+)", nl)
+                if url_fb:
+                    fallback_bullets.append(f"Endpoint: {url_fb.group(1)}")
+                if not fallback_bullets:
+                    fallback_bullets.append("No actionable request")
+                summary_obj = {
+                    "bullets": fallback_bullets,
+                    "router_text": nl,
+                    "extracted": {},
+                }
+
+            bullets = summary_obj.get("bullets") or []
+            summary_router_text = summary_obj.get("router_text") or None
+            if show_summary and bullets:
+                log.info("Summary: %s", " | ".join(bullets))
+
+        except Exception as e:
+            if show_summary:
+                log.info("Summary step failed: %s (continuing with original input)", e)
+
+    candidate_text = summary_router_text or nl
+
+    # --- Try summary-extracted direct spec first ---
+    if summary_obj and isinstance(summary_obj.get("extracted"), dict):
+        ex = summary_obj["extracted"]
+        inferred_command = None
+        if ex.get("ods"):
+            inferred_command = "ods_to_uprn"
+        if ex.get("output_area"):
+            inferred_command = "uprns_by_output_area"
+        if ex.get("uprn"):
+            inferred_command = "download_assets"
+
+        if inferred_command:
+            spec_direct = {
+                "command": inferred_command,
+                "uprn": ex.get("uprn"),
+                "ods": ex.get("ods"),
+                "output_area": ex.get("output_area"),
+                "sensor": ex.get("sensor"),
+                "types": ex.get("types"),
+                "download_dir": ex.get("download_dir"),
+                "api_key_env": ex.get("api_key_env"),
+                "db_url": ex.get("db_url"),
+            }
+            if spec_direct.get("types") is None and "merged" in candidate_text.lower():
+                spec_direct["types"] = ["did:lidar-pointcloud-merged"]
+
+            try:
+                argv = build_argv(spec_direct, py_exe, qa_path)
+                log.debug(
+                    "Router JSON (summary extracted):\n%s",
+                    json.dumps(spec_direct, indent=2),
+                )
+                log.info("Command: %s", " ".join([shlex.quote(x) for x in argv]))
+                if dry_run:
+                    return 0
+                proc = subprocess.run(argv)
+                return proc.returncode
+            except Exception:
+                # Fall through to heuristic + routing if build failed
+                pass
+
+    # --- Heuristic fast path ---
+    heuristic_spec = heuristic_parse(candidate_text)
+    if heuristic_spec:
+        log.debug("Heuristic spec: %s", json.dumps(heuristic_spec))
         spec = heuristic_spec
         argv = build_argv(spec, py_exe, qa_path)
-        print("\n[router] JSON spec (heuristic):")
-        print(json.dumps(spec, indent=2))
-        print("\n[router] Command:")
-        print(" ".join([shlex.quote(x) for x in argv]))
+        log.info("Command: %s", " ".join([shlex.quote(x) for x in argv]))
         if dry_run:
             return 0
         proc = subprocess.run(argv)
         return proc.returncode
 
+    # --- Model routing ---
     messages = [{"role": "system", "content": SYSTEM_ROUTER_PROMPT}]
     for u, a in FEW_SHOTS:
         messages.append({"role": "user", "content": u})
         messages.append({"role": "assistant", "content": a})
-    messages.append({"role": "user", "content": nl})
+    messages.append({"role": "user", "content": candidate_text})
 
     resp = ollama_chat(
         base_url=base_url,
@@ -434,20 +550,15 @@ def run_once(
         keep_alive=keep_alive,
         force_json=force_json,
     )
-
     if debug_model:
-        print("[debug] Primary model raw JSON response:")
-        try:
-            print(json.dumps(resp, indent=2, ensure_ascii=False))
-        except Exception:
-            print(str(resp))
+        log.debug(
+            "Primary model raw JSON:\n%s",
+            json.dumps(resp, indent=2, ensure_ascii=False),
+        )
 
     content = extract_assistant_text_from_ollama(resp)
-    if debug_model:
-        print("[debug] Extracted content (primary):")
-        print(repr(content))
+    log.debug("Primary model extracted content: %r", content)
 
-    # Try strict JSON first; if that fails, slice the first JSON object.
     spec = None
     if content.strip():
         try:
@@ -458,76 +569,74 @@ def run_once(
                 spec = json.loads(blob)
             except Exception:
                 spec = None
-    if spec is None:
-        # Retry once without forcing JSON if we had forced it and got nothing
-        if force_json:
-            print(
-                "[router] Empty/invalid JSON content; retrying without format=json..."
-            )
-            resp2 = ollama_chat(
-                base_url=base_url,
-                model=model_id,
-                messages=messages,
-                temperature=temperature,
-                top_p=top_p,
-                num_predict=num_predict,
-                num_ctx=num_ctx,
-                keep_alive=keep_alive,
-                force_json=False,
-            )
-            content2 = extract_assistant_text_from_ollama(resp2)
-            if debug_model:
-                print("[debug] Secondary model raw JSON response (no format=json):")
-                try:
-                    print(json.dumps(resp2, indent=2, ensure_ascii=False))
-                except Exception:
-                    print(str(resp2))
-                print("[debug] Extracted content (secondary):")
-                print(repr(content2))
-            try:
-                spec = json.loads(content2)
-            except Exception:
-                try:
-                    blob = slice_first_json_object(content2)
-                    spec = json.loads(blob)
-                except Exception:
-                    spec = None
-        # Last resort: apply heuristic after model failure
-        if spec is None:
-            heuristic_spec = heuristic_parse(nl)
-            if heuristic_spec:
-                print("[router] Falling back to heuristic after model failure.")
-                spec = heuristic_spec
 
-    # Fallback: if no command or unsupported command, emit help and return gracefully.
+    if spec is None and force_json:
+        log.debug("Empty/invalid JSON content; retrying without format=json...")
+        resp2 = ollama_chat(
+            base_url=base_url,
+            model=model_id,
+            messages=messages,
+            temperature=temperature,
+            top_p=top_p,
+            num_predict=num_predict,
+            num_ctx=num_ctx,
+            keep_alive=keep_alive,
+            force_json=False,
+        )
+        if debug_model:
+            log.debug(
+                "Secondary model raw JSON:\n%s",
+                json.dumps(resp2, indent=2, ensure_ascii=False),
+            )
+        content2 = extract_assistant_text_from_ollama(resp2)
+        log.debug("Secondary model extracted content: %r", content2)
+        try:
+            spec = json.loads(content2)
+        except Exception:
+            try:
+                blob = slice_first_json_object(content2)
+                spec = json.loads(blob)
+            except Exception:
+                spec = None
+
+    if spec is None:
+        heuristic_spec = heuristic_parse(nl)
+        if heuristic_spec:
+            log.debug(
+                "Fallback to heuristic after model failure: %s",
+                json.dumps(heuristic_spec),
+            )
+            spec = heuristic_spec
+
     if not spec or spec.get("command") not in {
         "download_assets",
         "ods_to_uprn",
         "uprns_by_output_area",
     }:
-        print("[router] No actionable command inferred from model output.")
-        print("[router] Raw model content:")
-        print(content.strip())
-        print_router_help()
+        log.warning("No actionable command inferred.")
+        log.info(
+            "Try examples like:\n"
+            "  • 'Download the merged lidar point cloud for UPRN 5045394'\n"
+            "  • 'Map ODS G85013 to UPRNs'\n"
+            "  • 'List all UPRNs in output areas E00004550 and E00032882'"
+        )
+        log.debug("Raw model content:\n%s", content.strip())
         return 0
 
     argv = build_argv(spec, py_exe, qa_path)
+    log.debug("Router JSON:\n%s", json.dumps(spec, indent=2))
+    log.info("Command: %s", " ".join([shlex.quote(x) for x in argv]))
 
-    print("\n[router] JSON spec:")
-    print(json.dumps(spec, indent=2))
-    print("\n[router] Command:")
-    print(" ".join([shlex.quote(x) for x in argv]))
     if dry_run:
         return 0
 
-    # Inherit env (so API_KEY etc. is available)
     proc = subprocess.run(argv)
     return proc.returncode
 
 
 def main():
     ap = argparse.ArgumentParser(
-        description="NL interface for query_assist.py using Ollama"
+        description="Natural-language interface for query_assist.py using Ollama"
     )
     ap.add_argument("--model-id", default="gpt-oss:20b", help="Ollama model name/tag")
     ap.add_argument(
@@ -543,7 +652,7 @@ def main():
     ap.add_argument(
         "--dry-run",
         action="store_true",
-        help="Only print the derived command; do not execute",
+        help="Only log the derived command; do not execute",
     )
     ap.add_argument(
         "--once", "-q", help="Run a single NL query and exit (non-interactive)"
@@ -571,28 +680,73 @@ def main():
     ap.add_argument(
         "--no-force-json",
         action="store_true",
-        help="Do not set format='json' in the chat call (not recommended)",
+        help="Do not set format='json' in the chat call",
+    )
+
+    # Logging controls
+    ap.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Increase verbosity ( -v = info, -vv = debug )",
     )
     ap.add_argument(
         "--debug-model",
         action="store_true",
-        help="Print raw model JSON responses and extracted text",
+        help="Force DEBUG and include raw model responses",
+    )
+
+    # Summarization controls
+    ap.add_argument(
+        "--no-summarize",
+        action="store_true",
+        help="Disable preliminary summarization step",
+    )
+    ap.add_argument(
+        "--summary-model",
+        default=None,
+        help="Model ID for summarization (defaults to routing model)",
+    )
+    ap.add_argument(
+        "--summary-temperature",
+        type=float,
+        default=0.0,
+        help="Temperature for summarization model",
+    )
+    ap.add_argument(
+        "--hide-summary", action="store_true", help="Do not log summarization bullets"
     )
 
     args = ap.parse_args()
 
-    print(f"[init] Ollama base URL: {args.base_url}")
-    print(
-        f"[init] model={args.model_id} temperature={args.temperature} top_p={args.top_p} "
-        f"num_predict={args.num_predict} num_ctx={args.num_ctx} keep_alive={args.keep_alive} "
-        f"force_json={not args.no_force_json}"
+    # Configure logging (quiet by default: WARNING). -v sets INFO, -vv or --debug-model sets DEBUG.
+    if args.debug_model or args.verbose >= 2:
+        level = logging.DEBUG
+    elif args.verbose == 1:
+        level = logging.INFO
+    else:
+        level = logging.WARNING
+
+    logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
+
+    # Initial context logs (concise)
+    log.info("Model: %s (%s)", args.model_id, args.base_url)
+    log.debug(
+        "Decoding temp=%.2f top_p=%.2f predict=%d ctx=%s keep_alive=%s force_json=%s",
+        args.temperature,
+        args.top_p,
+        args.num_predict,
+        str(args.num_ctx),
+        str(args.keep_alive),
+        str(not args.no_force_json),
     )
 
     py_exe = sys.executable
     qa_path = args.query_assist_path
 
-    if args.once:
-        try:
+    try:
+        if args.once:
             rc = run_once(
                 base_url=args.base_url,
                 model_id=args.model_id,
@@ -607,24 +761,25 @@ def main():
                 keep_alive=args.keep_alive,
                 force_json=(not args.no_force_json),
                 debug_model=args.debug_model,
+                summarize=(not args.no_summarize),
+                summary_model=(args.summary_model or args.model_id),
+                summary_temperature=args.summary_temperature,
+                show_summary=not args.hide_summary,
             )
             sys.exit(rc)
-        except Exception as e:
-            print(f"[router] Error: {e}", file=sys.stderr)
-            sys.exit(1)
 
-    print("NL router for query_assist.py (Ollama). Type 'exit' or Ctrl-D to quit.")
-    while True:
-        try:
-            nl = input("\n> ").strip()
-        except EOFError:
-            break
-        if not nl:
-            continue
-        if nl.lower() in {"exit", "quit"}:
-            break
-        try:
-            run_once(
+        if level <= logging.INFO:
+            print("NL router for query_assist.py. Type 'exit' or Ctrl-D to quit.")
+        while True:
+            try:
+                nl = input("> ").strip()
+            except EOFError:
+                break
+            if not nl:
+                continue
+            if nl.lower() in {"exit", "quit"}:
+                break
+            rc = run_once(
                 base_url=args.base_url,
                 model_id=args.model_id,
                 nl=nl,
@@ -638,9 +793,16 @@ def main():
                 keep_alive=args.keep_alive,
                 force_json=(not args.no_force_json),
                 debug_model=args.debug_model,
+                summarize=(not args.no_summarize),
+                summary_model=(args.summary_model or args.model_id),
+                summary_temperature=args.summary_temperature,
+                show_summary=not args.hide_summary,
             )
-        except Exception as e:
-            print(f"[router] Error: {e}", file=sys.stderr)
+            if rc != 0:
+                log.warning("Subprocess exited with code %d", rc)
+    except Exception as e:
+        log.error("Fatal error: %s", e)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
