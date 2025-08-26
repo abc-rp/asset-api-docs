@@ -8,14 +8,16 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import textwrap
 from typing import Any
 
 import requests
 
 # -------------------------------
-# System & Summary Prompts (unchanged semantics; formatting tuned)
+# System & Summary Prompts
 # -------------------------------
 
 SYSTEM_ROUTER_PROMPT = """You are a rigorous function-call router for a Python CLI named query_assist.py.
@@ -225,6 +227,12 @@ def ensure_list_or_path(v: None | str | list[str]) -> list[str]:
     return [s]
 
 
+def _find_csv_paths(text: str) -> list[str]:
+    """Return a list of CSV-like path tokens found in text."""
+    # Accept absolute, relative, and bare filenames ending with .csv
+    return re.findall(r'(?:(?:[A-Za-z]:)?[^\s"\'<>|]+\.csv)\b', text)
+
+
 def build_argv(spec: dict[str, Any], py: str, qa_path: str) -> list[str]:
     """Map the JSON spec to query_assist.py argv."""
     cmd = [py, qa_path]
@@ -270,10 +278,11 @@ def build_argv(spec: dict[str, Any], py: str, qa_path: str) -> list[str]:
 
 def heuristic_parse(nl: str) -> dict[str, Any] | None:
     """
-    Heuristic parse for common patterns:
-
-      - Output areas: 'output area(s)' or codes E########
-      - ODS codes: tokens like A12345 (with/without "ODS")
+    Heuristic parse for common patterns with CSV precedence:
+      - CSV + 'uprn' → download_assets (uprn=<csv>)
+      - CSV + 'output area' → uprns_by_output_area (output_area=<csv>)
+      - Output areas: codes E########
+      - ODS: tokens like A12345
       - UPRN asset downloads: ≥6-digit tokens + keywords
     """
     text = nl.strip()
@@ -281,17 +290,77 @@ def heuristic_parse(nl: str) -> dict[str, Any] | None:
         return None
     lowered = text.lower()
 
+    csv_paths = _find_csv_paths(text)
     output_area_codes = re.findall(r"\bE\d{8}\b", text)
     ods_codes = re.findall(r"\b[A-Z]\d{5}\b", text)
     uprn_candidates = [t for t in re.findall(r"\b\d{6,}\b", text)]
 
-    merged_pc = bool(
-        re.search(r"merged\s+(lidar\s+)?point\s*cloud", lowered)
+    # Asset type hints
+    wants_merged = bool(
+        re.search(r"merged\s+(lidar\s+)?point\s*clouds?", lowered)
         or "merged lidar" in lowered
     )
+    wants_rgb = ("rgb" in lowered) and ("image" in lowered or "images" in lowered)
+
+    # Endpoint override
     endpoint_match = re.search(r"(https?://[\w\.-:%/]+)", text)
     endpoint_url = endpoint_match.group(1) if endpoint_match else None
 
+    # --- CSV precedence ---
+    if csv_paths:
+        # If the user mentions UPRN(s), prefer treating the CSV as a UPRN list
+        if "uprn" in lowered:
+            types_list = []
+            if wants_merged:
+                types_list.append("did:lidar-pointcloud-merged")
+            if wants_rgb:
+                types_list.append("did:rgb-image")
+            return {
+                "command": "download_assets",
+                "uprn": csv_paths,
+                "sensor": None,
+                "types": types_list or None,
+                "download_dir": None,
+                "api_key_env": None,
+                "db_url": endpoint_url,
+                "ods": None,
+                "output_area": None,
+            }
+        # Else, if they mention output areas explicitly, treat CSV as an OA list
+        if (
+            "output area" in lowered
+            or "output areas" in lowered
+            or "oa" in lowered.split()
+        ):
+            return {
+                "command": "uprns_by_output_area",
+                "output_area": csv_paths,
+                "uprn": None,
+                "ods": None,
+                "sensor": None,
+                "types": None,
+                "download_dir": None,
+                "api_key_env": None,
+                "db_url": None,
+            }
+        # If ambiguous: assume UPRN list (safer/more common in this CLI)
+        return {
+            "command": "download_assets",
+            "uprn": csv_paths,
+            "sensor": None,
+            "types": (
+                ["did:lidar-pointcloud-merged"]
+                if wants_merged
+                else (["did:rgb-image"] if wants_rgb else None)
+            ),
+            "download_dir": None,
+            "api_key_env": None,
+            "db_url": endpoint_url,
+            "ods": None,
+            "output_area": None,
+        }
+
+    # --- Pure OA codes ---
     if output_area_codes and (
         "output area" in lowered
         or "output areas" in lowered
@@ -309,6 +378,7 @@ def heuristic_parse(nl: str) -> dict[str, Any] | None:
             "db_url": None,
         }
 
+    # --- ODS codes (only if no explicit UPRN numbers present) ---
     if ods_codes and ("ods" in lowered or not uprn_candidates):
         return {
             "command": "ods_to_uprn",
@@ -322,6 +392,7 @@ def heuristic_parse(nl: str) -> dict[str, Any] | None:
             "db_url": None,
         }
 
+    # --- UPRN download with optional types ---
     asset_keywords = {
         "download",
         "get",
@@ -332,14 +403,19 @@ def heuristic_parse(nl: str) -> dict[str, Any] | None:
         "images",
         "point",
         "pointcloud",
+        "point cloud",
     }
     if uprn_candidates and any(k in lowered for k in asset_keywords):
-        types_list = ["did:lidar-pointcloud-merged"] if merged_pc else None
+        types_list = []
+        if wants_merged:
+            types_list.append("did:lidar-pointcloud-merged")
+        if wants_rgb:
+            types_list.append("did:rgb-image")
         return {
             "command": "download_assets",
             "uprn": uprn_candidates,
             "sensor": None,
-            "types": types_list,
+            "types": types_list or None,
             "download_dir": None,
             "api_key_env": None,
             "db_url": endpoint_url,
@@ -386,6 +462,97 @@ def ollama_chat(
     return resp.json()
 
 
+# -------------------------------
+# Verbose-mode intro helpers
+# -------------------------------
+
+
+def _fetch_model_intro(base_url: str, model_id: str) -> str:
+    """
+    Ask the routing model (plain text) to describe its function briefly.
+    Safe: if the request fails, returns a static fallback.
+    """
+    try:
+        resp = ollama_chat(
+            base_url=base_url,
+            model=model_id,
+            messages=[
+                {"role": "system", "content": SYSTEM_ROUTER_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        "Briefly describe your function in 4–7 short bullet points without JSON. "
+                        "Focus on how natural-language input is turned into a structured command "
+                        "for query_assist.py and what arguments you can infer."
+                    ),
+                },
+            ],
+            force_json=False,
+            temperature=0.0,
+            top_p=0.95,
+            num_predict=200,
+        )
+        text = extract_assistant_text_from_ollama(resp).strip()
+        if text.startswith("{") and text.endswith("}"):
+            try:
+                obj = json.loads(text)
+                text = obj.get("description") or obj.get("text") or text
+            except Exception:
+                pass
+        return text
+    except Exception as e:
+        logging.getLogger("nl_query_cli").debug("Intro fetch failed: %s", e)
+        return (
+            "- Routes natural-language queries to one of three commands: "
+            "download_assets, ods_to_uprn, uprns_by_output_area.\n"
+            "- Extracts UPRNs/ODS/Output Areas plus optional sensor, types, "
+            "download_dir, api_key_env, db_url.\n"
+            "- Maps asset phrases to canonical IRIs (e.g., merged lidar → did:lidar-pointcloud-merged).\n"
+            "- Builds argv for query_assist.py and executes it (unless --dry-run).\n"
+            "- Uses heuristics, few-shots, and optional summarization for robustness."
+        )
+
+
+def _render_box(title: str, body: str) -> str:
+    """Render a Unicode box with a title and wrapped body."""
+    term_width = shutil.get_terminal_size(fallback=(100, 24)).columns
+    max_width = max(60, min(term_width - 2, 100))
+    wrap_width = max_width - 4
+
+    body_lines = []
+    for para in body.splitlines():
+        if not para.strip():
+            body_lines.append("")
+        else:
+            body_lines.extend(textwrap.wrap(para, width=wrap_width))
+
+    title = title.strip()
+    title_line = f" {title} "
+    top = "┌" + "─" * (max_width - 2) + "┐"
+    sep = "├" + "─" * (max_width - 2) + "┤"
+    bot = "└" + "─" * (max_width - 2) + "┘"
+
+    if len(title_line) <= (max_width - 2):
+        left = (max_width - 2 - len(title_line)) // 2
+        right = max_width - 2 - len(title_line) - left
+        top = "┌" + "─" * left + title_line + "─" * right + "┐"
+
+    content = "\n".join("│ " + line.ljust(max_width - 4) + " │" for line in body_lines)
+    return "\n".join([top, sep, content, bot])
+
+
+def _print_intro_banner(base_url: str, model_id: str) -> None:
+    intro = _fetch_model_intro(base_url, model_id)
+    banner = _render_box(f"query_assist.py Router — {model_id}", intro)
+    print(banner)
+    print()
+
+
+# -------------------------------
+# Core turn runner
+# -------------------------------
+
+
 def run_once(
     base_url: str,
     model_id: str,
@@ -410,7 +577,7 @@ def run_once(
     Only DEBUG shows JSON specs and raw model content.
     """
     original_nl = nl
-    log.info("Request: %s", original_nl)
+    # log.info("Request: %s", original_nl)
 
     # --- Summarization (independent of routing) ---
     summary_router_text = None
@@ -450,27 +617,95 @@ def run_once(
                         summary_obj = None
 
             if not summary_obj:
-                # Heuristic fallback summary
-                fallback_bullets = []
-                uprns_fb = re.findall(r"\b\d{6,}\b", nl)
-                if uprns_fb:
-                    fallback_bullets.append(f"UPRNs: {', '.join(uprns_fb)}")
-                if "merged" in nl.lower():
+                # Heuristic fallback summary aligned with heuristic_parse
+                lowered = nl.lower()
+                fallback_bullets: list[str] = []
+                extracted: dict[str, Any] = {}
+
+                csv_paths = _find_csv_paths(nl)
+                oa_fb = re.findall(r"\bE\d{8}\b", nl)
+                ods_fb = re.findall(r"\b[A-Z]\d{5}\b", nl)
+                uprn_fb = re.findall(r"\b\d{6,}\b", nl)
+
+                wants_merged = bool(
+                    re.search(r"merged\s+(lidar\s+)?point\s*clouds?", lowered)
+                    or "merged lidar" in lowered
+                )
+                wants_rgb = ("rgb" in lowered) and (
+                    "image" in lowered or "images" in lowered
+                )
+
+                if csv_paths:
+                    if "uprn" in lowered:
+                        extracted["uprn"] = csv_paths
+                        fallback_bullets.append(f"UPRNs CSV: {', '.join(csv_paths)}")
+                    elif (
+                        ("output area" in lowered)
+                        or ("output areas" in lowered)
+                        or ("oa" in lowered.split())
+                    ):
+                        extracted["output_area"] = csv_paths
+                        fallback_bullets.append(
+                            f"Output-area CSV: {', '.join(csv_paths)}"
+                        )
+                    else:
+                        extracted["uprn"] = csv_paths
+                        fallback_bullets.append(
+                            f"UPRNs CSV (assumed): {', '.join(csv_paths)}"
+                        )
+
+                if not csv_paths:
+                    if oa_fb:
+                        extracted["output_area"] = oa_fb
+                        fallback_bullets.append(f"Output areas: {', '.join(oa_fb)}")
+                    if ods_fb and not uprn_fb:
+                        extracted["ods"] = ods_fb
+                        fallback_bullets.append(f"ODS: {', '.join(ods_fb)}")
+                    if uprn_fb:
+                        extracted["uprn"] = uprn_fb
+                        fallback_bullets.append(f"UPRNs: {', '.join(uprn_fb)}")
+
+                if wants_merged:
+                    extracted["types"] = list(
+                        set(
+                            (extracted.get("types") or [])
+                            + ["did:lidar-pointcloud-merged"]
+                        )
+                    )
                     fallback_bullets.append("Type: merged lidar pointcloud")
+                if wants_rgb:
+                    extracted["types"] = list(
+                        set((extracted.get("types") or []) + ["did:rgb-image"])
+                    )
+                    fallback_bullets.append("Type: RGB image")
+
                 url_fb = re.search(r"(https?://[\w\.-:%/]+)", nl)
                 if url_fb:
+                    extracted["db_url"] = url_fb.group(1)
                     fallback_bullets.append(f"Endpoint: {url_fb.group(1)}")
-                if not fallback_bullets:
-                    fallback_bullets.append("No actionable request")
+
+                if "uprn" in extracted:
+                    router_text = (
+                        f"Download assets for UPRN(s) {', '.join(extracted['uprn'])}"
+                    )
+                elif "output_area" in extracted:
+                    router_text = f"List UPRNs in output areas {', '.join(extracted['output_area'])}"
+                elif "ods" in extracted:
+                    router_text = f"Map ODS {', '.join(extracted['ods'])} to UPRNs"
+                else:
+                    router_text = "no-op"
+                    if not fallback_bullets:
+                        fallback_bullets.append("No actionable request")
+
                 summary_obj = {
                     "bullets": fallback_bullets,
-                    "router_text": nl,
-                    "extracted": {},
+                    "router_text": router_text,
+                    "extracted": extracted,
                 }
 
             bullets = summary_obj.get("bullets") or []
             summary_router_text = summary_obj.get("router_text") or None
-            if show_summary and bullets:
+            if show_summary and bullets and bullets != ["No actionable request"]:
                 log.info("Summary: %s", " | ".join(bullets))
 
         except Exception as e:
@@ -517,8 +752,7 @@ def run_once(
                 proc = subprocess.run(argv)
                 return proc.returncode
             except Exception:
-                # Fall through to heuristic + routing if build failed
-                pass
+                pass  # fall through
 
     # --- Heuristic fast path ---
     heuristic_spec = heuristic_parse(candidate_text)
@@ -613,8 +847,8 @@ def run_once(
         "ods_to_uprn",
         "uprns_by_output_area",
     }:
-        log.warning("No actionable command inferred.")
-        log.info(
+        log.warning(
+            "No actionable command inferred.\n"
             "Try examples like:\n"
             "  • 'Download the merged lidar point cloud for UPRN 5045394'\n"
             "  • 'Map ODS G85013 to UPRNs'\n"
@@ -658,7 +892,7 @@ def main():
         "--once", "-q", help="Run a single NL query and exit (non-interactive)"
     )
 
-    # Decoding / runtime knobs (kept simple and model-agnostic)
+    # Decoding / runtime knobs
     ap.add_argument(
         "--temperature", type=float, default=0.0, help="Sampling temperature"
     )
@@ -720,7 +954,7 @@ def main():
 
     args = ap.parse_args()
 
-    # Configure logging (quiet by default: WARNING). -v sets INFO, -vv or --debug-model sets DEBUG.
+    # Configure logging
     if args.debug_model or args.verbose >= 2:
         level = logging.DEBUG
     elif args.verbose == 1:
@@ -730,17 +964,9 @@ def main():
 
     logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
 
-    # Initial context logs (concise)
-    log.info("Model: %s (%s)", args.model_id, args.base_url)
-    log.debug(
-        "Decoding temp=%.2f top_p=%.2f predict=%d ctx=%s keep_alive=%s force_json=%s",
-        args.temperature,
-        args.top_p,
-        args.num_predict,
-        str(args.num_ctx),
-        str(args.keep_alive),
-        str(not args.no_force_json),
-    )
+    # Verbose-mode introductory banner
+    if level <= logging.INFO:
+        _print_intro_banner(args.base_url, args.model_id)
 
     py_exe = sys.executable
     qa_path = args.query_assist_path
@@ -800,6 +1026,11 @@ def main():
             )
             if rc != 0:
                 log.warning("Subprocess exited with code %d", rc)
+    except KeyboardInterrupt:
+        # Cleanly handle Ctrl-C in REPL
+        print()
+        log.info("Interrupted.")
+        sys.exit(130)
     except Exception as e:
         log.error("Fatal error: %s", e)
         sys.exit(1)
