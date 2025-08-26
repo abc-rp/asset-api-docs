@@ -1,26 +1,4 @@
 #!/usr/bin/env python3
-"""
-Natural-language CLI router for query_assist.py using an Ollama-served model.
-
-- Sends a compact routing prompt (system + few shots + user) to Ollama's /api/chat.
-- Expects the model to emit ONLY a JSON object describing the desired command.
-- Builds an argv list and shells out to query_assist.py accordingly.
-
-Dependencies:
-  pip install -U requests
-
-Assumptions:
-  - An Ollama server is reachable (e.g., in a container) at:
-      base URL from $OLLAMA_HOST or http://localhost:11434
-  - The desired model (e.g., 'llama3.1:8b-instruct') is pulled and available in Ollama.
-
-Notes:
-  - We set `format: "json"` in the chat request to bias the model toward a clean JSON response.
-  - We still robustly slice the first JSON object from the returned text to tolerate minor deviations.
-
-Environment:
-  - OLLAMA_HOST (optional): e.g., http://localhost:11434 or http://ollama:11434
-"""
 
 import argparse
 import json
@@ -99,6 +77,72 @@ FEW_SHOTS: List[Tuple[str, str]] = [
         '{"command":"uprns_by_output_area","output_area":["E00004550","E00032882"],'
         '"uprn":null,"ods":null,"sensor":null,"types":null,"download_dir":null,'
         '"api_key_env":null,"db_url":null}',
+    ),
+    # --- Additional diverse shots ---
+    (
+        "Get RGB images and merged lidar for UPRNs 5045394 and 200003455212 to /mnt/dl (API key var KEY2).",
+        '{"command":"download_assets","uprn":["5045394","200003455212"],"sensor":null,'
+        '"types":["did:rgb-image","did:lidar-pointcloud-merged"],"download_dir":"/mnt/dl",'
+        '"api_key_env":"KEY2","db_url":null,"ods":null,"output_area":null}',
+    ),
+    (
+        "output areas E00004550 E00032882 E00063193 list uprns",
+        '{"command":"uprns_by_output_area","output_area":["E00004550","E00032882","E00063193"],'
+        '"uprn":null,"ods":null,"sensor":null,"types":null,"download_dir":null,'
+        '"api_key_env":null,"db_url":null}',
+    ),
+    (
+        "ODS codes G85013 Q12345 map to uprns",
+        '{"command":"ods_to_uprn","ods":["G85013","Q12345"],"uprn":null,"output_area":null,'
+        '"sensor":null,"types":null,"download_dir":null,"api_key_env":null,"db_url":null}',
+    ),
+    (
+        "5045394 merged lidar pointcloud now",
+        '{"command":"download_assets","uprn":["5045394"],"sensor":null,'
+        '"types":["did:lidar-pointcloud-merged"],"download_dir":null,'
+        '"api_key_env":null,"db_url":null,"ods":null,"output_area":null}',
+    ),
+    (
+        "Download lidar range and reflectance panoramas for UPRN 5045394 sensor bess:OusterLidarSensor",
+        '{"command":"download_assets","uprn":["5045394"],"sensor":"bess:OusterLidarSensor",'
+        '"types":["did:lidar-range-pano","did:lidar-reflectance-pano"],"download_dir":null,'
+        '"api_key_env":null,"db_url":null,"ods":null,"output_area":null}',
+    ),
+    (
+        "Give me temperature and humidity for UPRN 200003455212",
+        '{"command":"download_assets","uprn":["200003455212"],"sensor":null,'
+        '"types":["did:celsius-temperature","did:relative-humidity"],"download_dir":null,'
+        '"api_key_env":null,"db_url":null,"ods":null,"output_area":null}',
+    ),
+    (
+        "Fetch IR false color and temperature array for 5045394",
+        '{"command":"download_assets","uprn":["5045394"],"sensor":null,'
+        '"types":["did:ir-false-color-image","did:ir-temperature-array"],"download_dir":null,'
+        '"api_key_env":null,"db_url":null,"ods":null,"output_area":null}',
+    ),
+    (
+        "List UPRNs in output area E00004550 (single)",
+        '{"command":"uprns_by_output_area","output_area":["E00004550"],"uprn":null,'
+        '"ods":null,"sensor":null,"types":null,"download_dir":null,'
+        '"api_key_env":null,"db_url":null}',
+    ),
+    (
+        "Map ODS G85013 and G85014 with endpoint override http://myhost:3030/ds/query",
+        '{"command":"ods_to_uprn","ods":["G85013","G85014"],"uprn":null,"output_area":null,'
+        '"sensor":null,"types":null,"download_dir":null,"api_key_env":null,'
+        '"db_url":"http://myhost:3030/ds/query"}',
+    ),
+    (
+        "Download rgb image for 5045394 to /tmp/dl using key var APIKEY",
+        '{"command":"download_assets","uprn":["5045394"],"sensor":null,'
+        '"types":["did:rgb-image"],"download_dir":"/tmp/dl","api_key_env":"APIKEY",'
+        '"db_url":null,"ods":null,"output_area":null}',
+    ),
+    (
+        "Get point cloud frame for UPRN 5045394",
+        '{"command":"download_assets","uprn":["5045394"],"sensor":null,'
+        '"types":["did:lidar-pointcloud-frame"],"download_dir":null,"api_key_env":null,'
+        '"db_url":null,"ods":null,"output_area":null}',
     ),
 ]
 
