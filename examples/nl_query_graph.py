@@ -1,32 +1,5 @@
 #!/usr/bin/env python3
-"""
-LangGraph NL workflow for query_assist.py — single- and two-stage queries
 
-Capabilities
-------------
-• One-stage: download assets directly for given UPRN(s) / UPRN CSV
-• Two-stage: (a) ODS → UPRN → download assets  (b) Output Areas → UPRN → download assets
-• Optional filters: sensor, types; optional overrides: download_dir, api_key_env, db_url
-• LLM (Ollama) planner first; heuristic fallback; single-step router last
-• Robust parsing of query_assist.py logs to discover emitted CSVs and feed them forward
-
-Examples
---------
-# Direct assets (one-stage)
-python3 nl_query_graph.py -q "Download merged lidar for UPRN 5045394 to /data"
-
-# ODS → UPRN → assets (two-stage)
-python3 nl_query_graph.py -q "For ODS G85013 download RGB and merged lidar to /data"
-
-# Output areas → UPRN → assets (two-stage)
-python3 nl_query_graph.py -q "Get point clouds in output area E00004550"
-
-Notes
------
-• Requires: langgraph (pip install langgraph[all]), requests
-• Uses Ollama for optional planning: set OLLAMA_HOST or --base-url if needed
-• Defaults match query_assist.py: API key env var defaults to API_KEY, downloads to ./downloads
-"""
 from __future__ import annotations
 
 import argparse
@@ -43,14 +16,9 @@ import textwrap
 import time
 from typing import Any, Literal, TypedDict
 
-# Third-party
 import requests
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-
-# ======================================================================================
-# Prompts & canonical type mappings (kept consistent with nl_query_cli.py / README)
-# ======================================================================================
 
 SYSTEM_ROUTER_PROMPT = """You are a rigorous function-call router for a Python CLI named query_assist.py.
 
@@ -97,6 +65,9 @@ Constraints:
   - IR counts -> "did:ir-count-image"
   - temperature (no contentUrl) -> "did:celsius-temperature"
   - relative humidity (no contentUrl) -> "did:relative-humidity"
+  - UPRNs are the UK OS Unique Property Reference Numbers. Queries may call them buildings or other built environment associated words.
+  - Output areas may be called OAs.
+  - ODS codes are unique identifiers for UK NHS buildings, hence words like medical, practice, hospital, etc... may be used.
 - Prefer being decisive. When in doubt, infer sensible defaults.
 """
 
@@ -120,10 +91,6 @@ TYPE_ALIASES = {
 }
 
 POINTCLOUD_BOTH = ["did:lidar-pointcloud-merged", "did:lidar-pointcloud-frame"]
-
-# ======================================================================================
-# Helpers
-# ======================================================================================
 
 
 def _render_box(title: str, body: str) -> str:
@@ -915,12 +882,12 @@ def main() -> None:
     # Intro banner
     if level <= logging.INFO:
         body = (
-            "• Parses NL into a one- or two-stage plan (heuristics + optional LLM).\n"
+            "• Parses natural language into a multi-stage plan to execute SPARQL and retrieve assets.\n"
             "• Executes via LangGraph with artifact passing.\n"
-            "• Parses query_assist.py logs to capture CSVs for the next stage.\n"
+            "• Optional filters: sensor, types; optional overrides: download_dir, api_key_env, db_url \n"
             "• Supports dry-run and plan-only modes."
         )
-        print(_render_box(f"LangGraph NL Workflow — {args.model_id}", body))
+        print(_render_box(f"Query Assist AI — {args.model_id}", body))
 
     # Build LangGraph
     builder = StateGraph(WFState)
