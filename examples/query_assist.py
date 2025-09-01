@@ -111,7 +111,6 @@ def build_asset_query(uprn_list, args):
     quoted_uprns = ", ".join(f'"{u}"' for u in uprn_list)
     where.append(f"  FILTER(str(?uprnValue) IN ({quoted_uprns}))")
     if args.types:
-        # Assuming types are full IRIs, wrap them in <>
         quoted_types = ", ".join(f"<{t.strip()}>" for t in args.types.split(","))
         where.append(f"  FILTER(?enum IN ({quoted_types}))")
 
@@ -160,7 +159,6 @@ PREFIX so:  <http://schema.org/>
 def download_asset(url: str, save_dir: str, api_key: str):
     """Downloads a single asset from a URL to a specified directory."""
     try:
-        # Use a client with a longer timeout for potentially large files
         with httpx.Client(timeout=120.0) as client:
             resp = client.get(url, headers={"x-api-key": api_key})
             resp.raise_for_status()
@@ -199,7 +197,7 @@ def main():
                 ods_list.extend(load_column_from_csv(entry, "ods"))
             else:
                 ods_list.extend(o.strip() for o in entry.split(",") if o.strip())
-        ods_list = sorted(list(dict.fromkeys(ods_list)))  # Sort for consistent query
+        ods_list = sorted(list(dict.fromkeys(ods_list)))
 
         store = SPARQLStore(query_endpoint=args.db_url, returnFormat="json")
         q = build_ods_to_uprn_query(ods_list)
@@ -277,7 +275,7 @@ def main():
             logging.error(
                 f"API key environment variable {args.api_key_env!r} is not set."
             )
-            return  # Exit gracefully
+            return
 
         store = SPARQLStore(query_endpoint=args.db_url, returnFormat="json")
         q = build_asset_query(uprn_list, args)
@@ -294,7 +292,6 @@ def main():
                 if isinstance(phenomenon_time_obj, datetime):
                     date_str = phenomenon_time_obj.strftime("%Y-%m-%d")
                 else:
-                    # Fallback for unexpected date formats
                     date_str = str(phenomenon_time_obj).split("T")[0]
 
                 asset_type_subdir = asset_subdir(enum_iri)

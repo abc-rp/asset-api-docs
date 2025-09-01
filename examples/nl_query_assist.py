@@ -146,7 +146,6 @@ def _find_csvs_emitted(stream_text: str) -> list[str]:
     for pat in patterns:
         for m in re.finditer(pat, stream_text):
             csvs.append(m.group(1))
-    # Deduplicate preserving order
     seen: set[str] = set()
     out: list[str] = []
     for p in csvs:
@@ -238,7 +237,7 @@ def _map_types_from_text(lowered: str) -> list[str] | None:
 
     if not types:
         return None
-    # Dedupe, preserve order
+
     out: list[str] = []
     seen: set[str] = set()
     for t in types:
@@ -246,11 +245,6 @@ def _map_types_from_text(lowered: str) -> list[str] | None:
             out.append(t)
             seen.add(t)
     return out
-
-
-# ======================================================================================
-# Planning (heuristics + optional LLM via Ollama)
-# ======================================================================================
 
 
 def ollama_chat(
@@ -337,16 +331,13 @@ def heuristic_plan(nl: str, defaults: dict[str, Any]) -> list[StepSpec] | None:
     endpoint_match = re.search(r"(https?://[\w\.-:%/]+)", text)
     endpoint_url = endpoint_match.group(1) if endpoint_match else None
 
-    # Extract common options if present
     download_dir = None
     m = re.search(r"(?: to | into )\s+(/[^ ]+)", lowered)
     if m:
         download_dir = m.group(1)
 
-    # Types
     types = _map_types_from_text(lowered)
 
-    # CSV containing UPRNs
     if csv_paths and ("uprn" in lowered or "uprns" in lowered):
         step: dict[str, Any] = {
             "command": "download_assets",
@@ -357,7 +348,6 @@ def heuristic_plan(nl: str, defaults: dict[str, Any]) -> list[StepSpec] | None:
         }
         return [step]
 
-    # Output area → assets
     if (oa_codes or "output area" in lowered or "output areas" in lowered) and (
         types
         or "point cloud" in lowered
@@ -370,7 +360,6 @@ def heuristic_plan(nl: str, defaults: dict[str, Any]) -> list[StepSpec] | None:
         if csv_paths and ("uprn" not in lowered):
             oa_list.extend(csv_paths)
         if not oa_list:
-            # No concrete OA identifiers provided; defer to LLM/router instead of emitting an invalid step
             return None
         second: dict[str, Any] = {
             "command": "download_assets",
@@ -378,7 +367,7 @@ def heuristic_plan(nl: str, defaults: dict[str, Any]) -> list[StepSpec] | None:
             "download_dir": download_dir or defaults.get("download_dir"),
             "db_url": defaults.get("db_url"),
         }
-        if types:  # only include types if user implied them
+        if types:
             second["types"] = types
         return [
             {
@@ -392,7 +381,6 @@ def heuristic_plan(nl: str, defaults: dict[str, Any]) -> list[StepSpec] | None:
             second,
         ]
 
-    # ODS → assets
     if (ods_codes or "ods" in lowered) and (types is not None):
         ods_list: list[str] = []
         if ods_codes:
@@ -417,7 +405,6 @@ def heuristic_plan(nl: str, defaults: dict[str, Any]) -> list[StepSpec] | None:
             },
         ]
 
-    # Plain OA listing
     if oa_codes or ("output area" in lowered or "output areas" in lowered):
         oa_list: list[str] = []
         if oa_codes:
@@ -435,7 +422,6 @@ def heuristic_plan(nl: str, defaults: dict[str, Any]) -> list[StepSpec] | None:
             }
         ]
 
-    # Plain ODS mapping
     if ods_codes or "ods" in lowered:
         ods_list: list[str] = []
         if ods_codes:
@@ -453,7 +439,6 @@ def heuristic_plan(nl: str, defaults: dict[str, Any]) -> list[StepSpec] | None:
             }
         ]
 
-    # Direct UPRN assets
     if uprns and (
         "download" in lowered
         or "assets" in lowered
@@ -545,10 +530,9 @@ def llm_plan(
                 "db_url",
             ]:
                 if key in s:
-                    step[key] = s[key]  # type: ignore[index]
+                    step[key] = s[key]
             if s.get("uprn_from_previous_csvs"):
                 step["uprn_from_previous_csvs"] = True
-            # Do not auto-insert api_key_env; query_assist.py defaults it.
             if "download_dir" not in step and defaults.get("download_dir"):
                 step["download_dir"] = defaults["download_dir"]
             steps.append(step)
@@ -595,7 +579,6 @@ def upgrade_single_spec_to_plan(
 ) -> list[StepSpec]:
     lowered = nl.lower()
     types = spec.get("types") or _map_types_from_text(lowered)
-    # OA -> assets
     if spec.get("command") == "uprns_by_output_area" and (
         types
         or "point cloud" in lowered
@@ -611,7 +594,6 @@ def upgrade_single_spec_to_plan(
         if types:
             second["types"] = types
         return [spec, second]
-    # ODS -> assets
     if spec.get("command") == "ods_to_uprn" and (types is not None):
         return [
             spec,
@@ -625,11 +607,6 @@ def upgrade_single_spec_to_plan(
             },
         ]
     return [spec]
-
-
-# ======================================================================================
-# Execution helpers & LangGraph nodes
-# ======================================================================================
 
 
 def run_query_assist_step(
@@ -659,7 +636,6 @@ def materialize_previous_uprn_csvs(state: WFState) -> list[str]:
     from_logs = state.artifacts.get("csvs", [])
     if from_logs:
         return from_logs
-    # Fallback to default ODS CSV location if present
     dl_base = state.plan[0].get("download_dir") or os.path.join(
         os.getcwd(), "downloads"
     )
@@ -743,7 +719,6 @@ def node_plan(state: WFState) -> WFState:
 
     state.plan = plan or []
 
-    # Pretty-print plan at INFO/DEBUG
     if state.plan and state.verbose_level <= logging.INFO:
         print("Plan:")
         for i, step in enumerate(state.plan):
@@ -760,7 +735,6 @@ def node_execute(state: WFState) -> WFState:
         return state
     step = state.plan[state.current]
 
-    # If this step should consume prior CSVs, materialize them
     if step.get("uprn_from_previous_csvs"):
         csvs = materialize_previous_uprn_csvs(state)
         if not csvs:
@@ -781,7 +755,6 @@ def node_execute(state: WFState) -> WFState:
         extant = state.artifacts.get("csvs", [])
         state.artifacts["csvs"] = list(dict.fromkeys(extant + newly_found))
 
-    # Track executed action for summary
     try:
         argv_for_record = _build_argv(step, state.py_exe, state.qa_path)
     except Exception:
@@ -819,11 +792,6 @@ def check_done(state: WFState) -> str:
         state.log.append(f"Aborting: exceeded max_steps={state.max_steps}")
         return END
     return "execute"
-
-
-# ======================================================================================
-# CLI
-# ======================================================================================
 
 
 def parse_args() -> argparse.Namespace:
@@ -879,7 +847,6 @@ def main() -> None:
         level = logging.WARNING
     logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
 
-    # Intro banner
     if level <= logging.INFO:
         body = (
             "• Parses natural language into a multi-stage plan to execute SPARQL and retrieve assets.\n"
@@ -961,7 +928,6 @@ def main() -> None:
                     print(f"     emitted CSVs: {em}")
         return 0 if not any("non-zero exit" in l for l in logs) else 1
 
-    # === Entry modes ===
     try:
         if args.once:
             rc = run_once(args.once)
