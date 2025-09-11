@@ -3,56 +3,137 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 import logging
 import os
-import re
-import shlex
 import shutil
+import textwrap
+import re
+
+import json
+import requests
+import tempfile
+import shlex
 import subprocess
 import sys
-import textwrap
-import time
-from typing import Any, Literal, TypedDict
 
-import requests
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, START, StateGraph
+from thefuzz import process
+from openai import OpenAI
+from pydantic import BaseModel, Field, ValidationError
+from typing import Any, List, Optional, Union
+from heuristic_parser import HeuristicParser
 
 SYSTEM_ROUTER_PROMPT = """You are a rigorous function-call router for a Python CLI named query_assist.py.
 
-Supported commands and how to populate them:
+There is one supported command called download_assets that downloads assets based on a number of possible filters. It is populated as follows:
 
-1) download_assets
-   Required:   uprn  (string CSV path OR array of strings like ["5045394","200003455212"])
-   Optional:   sensor (string, e.g., "bess:OusterLidarSensor")
+   Optional:   identifier (types: uprn, ods, toid. May be a string CSV path like ["uprn.csv"] OR array of strings like ["5045394","200003455212"] OR a mixture of the two like ["uprn.csv", "6384826492"]. If the user provides a file path ending in `.csv`, you MUST treat the file path string itself as a value. Do NOT try to invent the contents of the file.)
+               geography (types: output-area, lower-layer-super-output-area, ward, london-borough, postcode, natural-name; may be a string CSV path like ["output-area.csv"] OR array of strings like ["E0001234", "E0007628"] OR a mixture of the two such as ["output-area.csv", "E0001234"]. If the user does not supply a code or csv file path, but rather a common or human readable name for a geographical area, please place that name into the natural-name section e.g. ["camden", "tower hamlets"]. If the user provides a file path ending in `.csv`, you MUST treat the file path string itself as a value. Do NOT try to invent the contents of the file.)
+               filter (types: see below for list of types; the datatypes are also specified below)
+               sensor (string, e.g., "bess:OusterLidarSensor")
                types  (array of strings; each a type IRI, e.g., ["did:rgb-image","did:lidar-pointcloud-merged"])
                download_dir (string path)
                api_key_env  (string, name of env var with API key)
                db_url       (string URL to SPARQL endpoint)
-
-2) ods_to_uprn
-   Required:   ods   (string CSV path OR array of strings like ["G85013","Q12345"])
-
-3) uprns_by_output_area
-   Required:   output_area (string CSV path OR array of strings, e.g., ["E00004550","E00032882"])
+    Other:     ontop-url (required IF user specifies toid, geography filters, or property filters)
 
 Schema (MUST output exactly one JSON object with these keys as needed):
 {
-  "command": "download_assets" | "ods_to_uprn" | "uprns_by_output_area",
-  "uprn":        string | string[] | null,
-  "ods":         string | string[] | null,
-  "output_area": string | string[] | null,
-  "sensor":      string | null,
-  "types":       string[] | null,
-  "download_dir": string | null,
-  "api_key_env":  string | null,
-  "db_url":       string | null
+  "identifier": {
+    "uprn":           string[] | null,
+    "ods":            string[] | null,
+    "toid":           string[] | null
+  },
+  "geography": {
+    "output-area":    string[] | null,
+    "lower-layer-super-output-area": string[] | null,
+    "ward":           string[] | null,
+    "london-borough": string[] | null,
+    "postcode":      string[] | null,
+    "natural-name": string[] | null
+  },
+  
+  "filter": {
+    "property-type":  string[] | null,
+    "built-form":     string[] | null,
+    "accommodation-type": string[] | null,
+    "tenure":         string[] | null,
+    "epc-rating":   string[] | null,
+    "potential-epc-rating": string[] | null,
+    "construction-age-band": string[] | null,
+    "building-use": string[] | null,
+    "main-heating-system": string[] | null,
+    "main-fuel-type": string[] | null,
+    "wall-type": string[] | null,
+    "roof-type": string[] | null,
+    "glazing-type": string[] | null,
+    "loac-group": string[] | null,
+    "loac-supergroup": string[] | null,
+    "listed-building-grade": string[] | null,
+    "heat-risk-quintile": An array of INTEGERS taking values from 1 to 5 (inclusive) | null,
+    "imd19-income-decile": An array of INTEGERS taking values from 1 to 10 (inclusive) | null,
+    "imd19-national-decile": An array of INTEGERS taking values from 1 to 10 (inclusive) | null,
+    "wall-insulation": boolean as string inside array (e.g. ["true"]) | null,   
+    "roof-insulation": boolean as string inside array (e.g. ["true"]) | null,
+    "in-conservation-area": boolean as string inside array (e.g. ["true"]) | null,
+    "epc-score":  array of one OR two INTEGERS | null,
+    "potential-epc-score": array of one OR two INTEGERS | null,
+    "floor-count": array of one OR two INTEGERS | null,
+    "basement-floor-count": array of one OR two INTEGERS | null,
+    "number-of-habitable-rooms": array of one OR two INTEGERS | null,
+    "easting": array of one OR two INTEGERS | null,
+    "northing": array of one OR two INTEGERS | null,
+    "total-floor-area": array of one or two INTEGERS | null,
+    "energy-consumption": array of one or two INTEGERS | null,
+    "solar-pv-area": array of one or two INTEGERS | null,
+    "solar-pv-potential": array of one or two DECIMALS | null,
+    "average-roof-tilt": array of one or two INTEGERS | null
+    "fuel-poverty": array of one or two DECIMALS | null
+  },
+  "sensor":          string | string[] | null,
+  "types":           string[] | null,
+  "download-dir":    string | null,
+  "api-key-env":     string | null,
+  "db-url":          string | null,
+  "ontop-url":       string | null
 }
+
 
 Constraints:
 - Return ONLY the JSON object. No prose, no markdown.
+- If the user request implies some identifiers but does not give a type, please deduce the best fit based on the structure of the identifier:
+  - UPRNs are numeric, at least 6 digits, e.g., "5045394" or "200003455212"
+  - ODS codes start with a letter followed by 5 digits, e.g., "A12345"
+  - TOIDs are numeric, at least 10 digits e.g., "1000006033182"
+  - Postcodes are alphanumeric, e.g., "SW1A 1AA"
+  - Output areas start with "E" followed by 8 digits, e.g., "E0001234"
+  - Lower Layer Super Output Areas start with "E" followed by 9 digits, e.g., "E00001234"
+  - Wards start with "E" followed by 7 digits, e.g., "E0501234"
+  - London Boroughs start with "E09" followed by 4 digits, e.g., "E09000001" 
+- Some filter types only accept a limited set of values. Please try to map user input to these values (case-sensitive):
+  - property-type: flat, house, park-home-caravan
+  - built-form: detached, semi-detached, end-terrace, mid-terrace
+  - accommodation-type: flat, semi-detached-house, detached-house, end-terraced-house, mid-terraced-house, park-home-caravan
+  - tenure: owner-occupied, social-housing, privately-rented
+  - epc-rating: AB, C, D, E, FG
+  - potential-epc-rating: AB, C, D, E, FG
+  - construction-age-band: pre-1900, 1900-1929, 1930-1949, 1950-1966, 1967-1982, 1983-1995, 1996-2011, 2012-onwards
+  - building-use: residential-only, mixed-use
+  - main-heating-system: boiler, room-storage-heaters, heat-pump, communal, none, other
+  - main-fuel-type: mains-gas, electricity, no-heating-system, other
+  - wall-type: cavity, solid, other
+  - roof-type: pitched, flat, room-in-roof, another-dwelling-above
+  - glazing-type: single-partial, secondary, double-triple
+  - loac-supergroup: A, B, C, D, E, F, G
+  - loac-group: A1, A2, A3, B1, B2, C1, C2, D1, D2, D3, E1, E2, F1, F2, G1, G2
+  - listed-building-grade: I, II, IIStar, Unknown
+- If the user request implies sensor types or similar, map them to the supported IRIs if possible:
+  - lidar -> bess:OusterLidarSensor
+  - ir-camera -> bess:FlirOryxCamera
+  - rgb-camera -> bess:FlirA70Camera
+  - ins -> bess:LordMicrostrainINSGQ7
+  - temperature -> bess:PhidgetTemperatureSensor
+  - humidity -> bess:PhidgetHumiditySensor
 - If the user request implies asset types, map them to the supported IRIs if possible:
   - RGB image -> "did:rgb-image"
   - merged lidar point cloud -> "did:lidar-pointcloud-merged"
@@ -65,33 +146,73 @@ Constraints:
   - IR counts -> "did:ir-count-image"
   - temperature (no contentUrl) -> "did:celsius-temperature"
   - relative humidity (no contentUrl) -> "did:relative-humidity"
-  - UPRNs are the UK OS Unique Property Reference Numbers. Queries may call them buildings or other built environment associated words.
-  - Output areas may be called OAs.
-  - ODS codes are unique identifiers for UK NHS buildings, hence words like medical, practice, hospital, etc... may be used.
+- UPRNs are the UK OS Unique Property Reference Numbers. Queries may call them buildings or other built environment associated words.
+- Output areas may be called OAs and lower layer super output areas may be called LSOAs. Wards may be called electoral wards or just wards. London boroughs may be called boroughs or London boroughs, sometimes administrative areas.
+- ODS codes are unique identifiers for UK NHS buildings, hence words like medical, practice, hospital, etc... may be used.
 - Prefer being decisive. When in doubt, infer sensible defaults.
 """
 
-TYPE_ALIASES = {
-    "rgb": "did:rgb-image",
-    "rgb image": "did:rgb-image",
-    "merged lidar": "did:lidar-pointcloud-merged",
-    "merged lidar point cloud": "did:lidar-pointcloud-merged",
-    "lidar point cloud": "did:lidar-pointcloud-frame",
-    "point cloud": "did:lidar-pointcloud-frame",
-    "point clouds": None,  # expands to both merged + frame
-    "lidar range panorama": "did:lidar-range-pano",
-    "lidar reflectance panorama": "did:lidar-reflectance-pano",
-    "lidar signal panorama": "did:lidar-signal-pano",
-    "lidar nearir panorama": "did:lidar-nearir-pano",
-    "ir false color": "did:ir-false-color-image",
-    "ir temperature array": "did:ir-temperature-array",
-    "ir counts": "did:ir-count-image",
-    "temperature": "did:celsius-temperature",
-    "relative humidity": "did:relative-humidity",
-}
+# Define data schema
+class IdentifierModel(BaseModel):
+    uprn: Optional[List[str]] = None
+    ods: Optional[List[str]] = None
+    toid: Optional[List[str]] = None
 
-POINTCLOUD_BOTH = ["did:lidar-pointcloud-merged", "did:lidar-pointcloud-frame"]
+class GeographyModel(BaseModel):
+    output_area: Optional[List[str]] = Field(None, alias="output-area")
+    lower_layer_super_output_area: Optional[List[str]] = Field(None, alias="lower-layer-super-output-area")
+    ward: Optional[List[str]] = None
+    london_borough: Optional[List[str]] = Field(None, alias="london-borough")
+    postcode: Optional[List[str]] = None
+    natural_name: Optional[List[str]] = Field(None, alias="natural-name")
 
+class FilterModel(BaseModel):
+    property_type: Optional[List[str]] = Field(None, alias="property-type")
+    built_form: Optional[List[str]] = Field(None, alias="built-form")
+    accommodation_type: Optional[List[str]] = Field(None, alias="accommodation-type")
+    tenure: Optional[List[str]] = None
+    epc_rating: Optional[List[str]] = Field(None, alias="epc-rating")
+    potential_epc_rating: Optional[List[str]] = Field(None, alias="potential-epc-rating")
+    construction_age_band: Optional[List[str]] = Field(None, alias="construction-age-band")
+    building_use: Optional[List[str]] = Field(None, alias="building-use")
+    main_heating_system: Optional[List[str]] = Field(None, alias="main-heating-system")
+    main_fuel_type: Optional[List[str]] = Field(None, alias="main-fuel-type")
+    glazing_type: Optional[List[str]] = Field(None, alias="glazing-type")
+    wall_type: Optional[List[str]] = Field(None, alias="wall-type")
+    roof_type: Optional[List[str]] = Field(None, alias="roof-type")
+    loac_group: Optional[List[str]] = Field(None, alias="loac-group")
+    loac_supergroup: Optional[List[str]] = Field(None, alias="loac-supergroup")
+    listed_building_grade: Optional[List[str]] = Field(None, alias="listed-building-grade")
+    heat_risk_quintile: Optional[List[int]] = Field(None, alias="heat-risk-quintile")
+    imd19_income_decile: Optional[List[int]] = Field(None, alias="imd19-income-decile")
+    imd19_national_decile: Optional[List[int]] = Field(None, alias="imd19-national-decile")
+    roof_insulation: Optional[List[str]] = Field(None, alias="roof-insulation")
+    in_conservation_area: Optional[List[str]] = Field(None, alias="in-conservation-area")
+    energy_consumption: Optional[List[Union[float, int]]] = Field(None, alias="energy-consumption")
+    solar_pv_area: Optional[List[Union[float, int]]] = Field(None, alias="solar-pv-area")
+    solar_pv_potential: Optional[List[Union[float, int]]] = Field(None, alias="solar-pv-potential")
+    average_roof_tilt: Optional[List[Union[float, int]]] = Field(None, alias="average-roof-tilt")
+    total_floor_area: Optional[List[Union[float, int]]] = Field(None, alias="total-floor-area")
+    epc_score: Optional[List[int]] = Field(None, alias="epc-score")
+    potential_epc_score: Optional[List[int]] = Field(None, alias="potential-epc-score")
+    floor_count: Optional[List[int]] = Field(None, alias="floor-count")
+    basement_floor_count: Optional[List[int]] = Field(None, alias="basement-floor-count")
+    number_of_habitable_rooms: Optional[List[int]] = Field(None, alias="number-of-habitable-rooms")
+    easting: Optional[List[int]] = None
+    northing: Optional[List[int]] = None
+    fuel_poverty: Optional[List[Union[float, int]]] = Field(None, alias="fuel-poverty")
+    wall_insulation: Optional[List[str]] = Field(None, alias="wall-insulation")
+
+class QueryAssistConfig(BaseModel):
+    identifier: Optional[IdentifierModel] = None
+    geography: Optional[GeographyModel] = None
+    filter: Optional[FilterModel] = None
+    sensor: Optional[Union[str, List[str]]] = None
+    types: Optional[List[str]] = None
+    download_dir: Optional[str] = Field(None, alias="download-dir")
+    api_key_env: Optional[str] = Field(None, alias="api-key-env")
+    db_url: Optional[str] = Field(None, alias="db-url")
+    ontop_url: Optional[str] = Field(None, alias="ontop-url")
 
 def _render_box(title: str, body: str) -> str:
     term_width = shutil.get_terminal_size(fallback=(100, 24)).columns
@@ -133,119 +254,59 @@ def _extract_first_json(text: str) -> dict | None:
                     return None
     return None
 
-
-def _find_csvs_emitted(stream_text: str) -> list[str]:
-    """Parse query_assist.py logs to discover created CSVs."""
-    csvs: list[str] = []
-    patterns = [
-        r"Saved CSV for .*? → ([^\s]+\.csv)",
-        r"Saved CSV for .*? -> ([^\s]+\.csv)",
-        r"Saved ODS.?UPRN CSV .*? → ([^\s]+\.csv)",
-        r"Saved ODS.?UPRN CSV .*? -> ([^\s]+\.csv)",
+def generate_config_from_nl(
+    nl: str, 
+    args: argparse.Namespace, 
+    llm_opts: dict
+) -> dict | None:
+    """
+    Uses an LLM to transform a natural language query into a JSON config object.
+    """
+    messages = [
+        {"role": "system", "content": SYSTEM_ROUTER_PROMPT},
+        {"role": "user", "content": nl},
     ]
-    for pat in patterns:
-        for m in re.finditer(pat, stream_text):
-            csvs.append(m.group(1))
-    seen: set[str] = set()
-    out: list[str] = []
-    for p in csvs:
-        if p not in seen:
-            out.append(p)
-            seen.add(p)
-    return out
-
-
-def _ensure_list_or_path(v: None | str | list[str]) -> list[str]:
-    """Convert (None | str | list[str]) to a flat argv-ready list."""
-    if v is None:
-        return []
-    if isinstance(v, list):
-        return [str(x) for x in v if str(x).strip()]
-    s = str(v).strip()
-    return [s] if s else []
-
-
-def _build_argv(spec: dict[str, Any], py: str, qa_path: str) -> list[str]:
-    cmd = [py, qa_path]
-    command = spec.get("command")
-    if command == "download_assets":
-        uprn = _ensure_list_or_path(spec.get("uprn"))
-        if not uprn:
-            raise ValueError("download_assets requires 'uprn'.")
-        cmd += ["--uprn"] + uprn
-        if spec.get("sensor"):
-            cmd += ["--sensor", str(spec["sensor"])]
-        if spec.get("types"):
-            cmd += ["--types", ",".join(spec["types"])]
-    elif command == "ods_to_uprn":
-        ods = _ensure_list_or_path(spec.get("ods"))
-        if not ods:
-            raise ValueError("ods_to_uprn requires 'ods'.")
-        cmd += ["--ods"] + ods
-    elif command == "uprns_by_output_area":
-        oa = _ensure_list_or_path(spec.get("output_area"))
-        if not oa:
-            raise ValueError("uprns_by_output_area requires 'output_area'.")
-        cmd += ["--output-area"] + oa
-    else:
-        raise ValueError(f"Unsupported command: {command!r}")
-
-    if spec.get("db_url"):
-        cmd += ["--db-url", str(spec["db_url"])]
-    if spec.get("download_dir"):
-        cmd += ["--download-dir", str(spec["download_dir"])]
-    if spec.get("api_key_env"):
-        cmd += ["--api-key-env", str(spec["api_key_env"])]
-    return cmd
-
-
-def _map_types_from_text(lowered: str) -> list[str] | None:
-    wants_pointclouds = re.search(r"\bpoint\s*clouds?\b", lowered) is not None
-    wants_merged = "merged lidar" in lowered or re.search(
-        r"merged\s+lidar\s+point\s*cloud", lowered
-    )
-    wants_frame = "pointcloud frame" in lowered or "single frame" in lowered
-
-    types: list[str] = []
-    if wants_pointclouds:
-        types.extend(POINTCLOUD_BOTH)
-    if wants_merged:
-        types.append("did:lidar-pointcloud-merged")
-    if wants_frame:
-        types.append("did:lidar-pointcloud-frame")
-
-    if "rgb" in lowered and "image" in lowered:
-        types.append("did:rgb-image")
-    if "range panorama" in lowered:
-        types.append("did:lidar-range-pano")
-    if "reflectance panorama" in lowered:
-        types.append("did:lidar-reflectance-pano")
-    if "signal panorama" in lowered:
-        types.append("did:lidar-signal-pano")
-    if "nearir" in lowered or "near-infrared" in lowered:
-        types.append("did:lidar-nearir-pano")
-    if "ir false" in lowered:
-        types.append("did:ir-false-color-image")
-    if (
-        "ir temperature array" in lowered
-        or re.search(r"thermal\s+arrays?", lowered)
-        or re.search(r"temperature\s+arrays?", lowered)
-    ):
-        types.append("did:ir-temperature-array")
-    if re.search(r"thermal\s+images?", lowered):
-        types.append("did:ir-false-color-image")
-
-    if not types:
+    try:
+        if args.api == "openai":
+            logging.info(f"Sending request to OpenAI model: {args.openai_model}")
+            resp = openai_chat(
+                model=args.openai_model,
+                messages=messages,
+                **llm_opts
+            )
+        else: 
+            logging.info(f"Sending request to Ollama model: {args.model_id}")
+            resp = ollama_chat(
+                base_url=args.base_url,
+                model=args.model_id,
+                messages=messages,
+                **llm_opts
+            )
+        content = resp.get("message", {}).get("content", "")
+        if not content:
+            return None
+        
+        config_obj = _extract_first_json(content)
+        if not isinstance(config_obj, dict):
+            logging.error(f"LLM did not return a valid JSON object. Response:\n{content}")
+            return None
+        
+        try:
+            # Validate the raw dictionary against Pydantic schema
+            valid_config = QueryAssistConfig.model_validate(config_obj)
+            
+            validated_dict = valid_config.model_dump(by_alias=True, exclude_none=True)
+            
+            logging.info(f"LLM generated valid config:\n{json.dumps(validated_dict, indent=2)}")
+            return validated_dict
+        
+        except ValidationError as e:
+            logging.error(f"LLM JSON is malformed. Validation failed:\n{e}")
+            return None
+            
+    except Exception as e:
+        logging.error(f"Error calling LLM for config generation: {e}")
         return None
-
-    out: list[str] = []
-    seen: set[str] = set()
-    for t in types:
-        if t not in seen:
-            out.append(t)
-            seen.add(t)
-    return out
-
 
 def ollama_chat(
     base_url: str,
@@ -253,7 +314,7 @@ def ollama_chat(
     messages: list[dict[str, str]],
     temperature: float = 0.0,
     top_p: float = 0.95,
-    num_predict: int = 256,
+    num_predict: int = 512,
     num_ctx: int | None = None,
     keep_alive: str | None = None,
     force_json: bool = True,
@@ -279,345 +340,190 @@ def ollama_chat(
     r = requests.post(url, json=payload, timeout=(5.0, timeout_s))
     r.raise_for_status()
     return r.json()
-
-
-class StepSpec(TypedDict, total=False):
-    command: Literal["download_assets", "ods_to_uprn", "uprns_by_output_area"]
-    uprn: list[str] | str | None
-    ods: list[str] | str | None
-    output_area: list[str] | str | None
-    sensor: str | None
-    types: list[str] | None
-    download_dir: str | None
-    api_key_env: str | None
-    db_url: str | None
-    uprn_from_previous_csvs: bool
-
-
-@dataclasses.dataclass
-class WFState:
-    nl: str
-    plan: list[StepSpec]
-    current: int = 0
-    artifacts: dict[str, Any] = dataclasses.field(default_factory=dict)
-    log: list[str] = dataclasses.field(default_factory=list)
-    actions: list[dict[str, Any]] = dataclasses.field(default_factory=list)
-    dry_run: bool = False
-    plan_only: bool = False
-    py_exe: str = sys.executable
-    qa_path: str = os.path.join(os.path.dirname(__file__), "query_assist.py")
-    base_url: str = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-    model_id: str = "gpt-oss:20b"
-    temperature: float = 0.0
-    top_p: float = 0.95
-    num_predict: int = 256
-    num_ctx: int | None = None
-    keep_alive: str | None = None
-    force_json: bool = True
-    verbose_level: int = logging.INFO
-    max_steps: int = 8
-
-
-def heuristic_plan(nl: str, defaults: dict[str, Any]) -> list[StepSpec] | None:
-    text = nl.strip()
-    if not text:
-        return None
-    lowered = text.lower()
-
-    csv_paths = re.findall(r'(?:(?:[A-Za-z]:)?[^\s"\'<>|]+\.csv)\b', text)
-    oa_codes = re.findall(r"\bE\d{8}\b", text)
-    ods_codes = re.findall(r"\b[A-Z]\d{5}\b", text)
-    uprns = re.findall(r"\b\d{6,}\b", text)
-    endpoint_match = re.search(r"(https?://[\w\.-:%/]+)", text)
-    endpoint_url = endpoint_match.group(1) if endpoint_match else None
-
-    download_dir = None
-    m = re.search(r"(?: to | into )\s+(/[^ ]+)", lowered)
-    if m:
-        download_dir = m.group(1)
-
-    types = _map_types_from_text(lowered)
-
-    if csv_paths and ("uprn" in lowered or "uprns" in lowered):
-        step: dict[str, Any] = {
-            "command": "download_assets",
-            "uprn": csv_paths if len(csv_paths) > 1 else csv_paths[0],
-            "types": types,
-            "download_dir": download_dir or defaults.get("download_dir"),
-            "db_url": endpoint_url or defaults.get("db_url"),
-        }
-        return [step]
-
-    if (oa_codes or "output area" in lowered or "output areas" in lowered) and (
-        types
-        or "point cloud" in lowered
-        or "assets" in lowered
-        or "download" in lowered
-    ):
-        oa_list: list[str] = []
-        if oa_codes:
-            oa_list.extend(oa_codes)
-        if csv_paths and ("uprn" not in lowered):
-            oa_list.extend(csv_paths)
-        if not oa_list:
-            return None
-        second: dict[str, Any] = {
-            "command": "download_assets",
-            "uprn_from_previous_csvs": True,
-            "download_dir": download_dir or defaults.get("download_dir"),
-            "db_url": defaults.get("db_url"),
-        }
-        if types:
-            second["types"] = types
-        return [
-            {
-                "command": "uprns_by_output_area",
-                "output_area": oa_list
-                if oa_list
-                else (csv_paths[0] if csv_paths else None),
-                "download_dir": defaults.get("download_dir"),
-                "db_url": defaults.get("db_url"),
-            },
-            second,
-        ]
-
-    if (ods_codes or "ods" in lowered) and (types is not None):
-        ods_list: list[str] = []
-        if ods_codes:
-            ods_list.extend(ods_codes)
-        if csv_paths:
-            ods_list.extend(csv_paths)
-        if not ods_list:
-            return None
-        return [
-            {
-                "command": "ods_to_uprn",
-                "ods": ods_list,
-                "download_dir": defaults.get("download_dir"),
-                "db_url": defaults.get("db_url"),
-            },
-            {
-                "command": "download_assets",
-                "uprn_from_previous_csvs": True,
-                "types": types,
-                "download_dir": download_dir or defaults.get("download_dir"),
-                "db_url": defaults.get("db_url"),
-            },
-        ]
-
-    if oa_codes or ("output area" in lowered or "output areas" in lowered):
-        oa_list: list[str] = []
-        if oa_codes:
-            oa_list.extend(oa_codes)
-        if csv_paths and ("uprn" not in lowered):
-            oa_list.extend(csv_paths)
-        if not oa_list:
-            return None
-        return [
-            {
-                "command": "uprns_by_output_area",
-                "output_area": oa_list if len(oa_list) > 1 else oa_list[0],
-                "download_dir": defaults.get("download_dir"),
-                "db_url": defaults.get("db_url"),
-            }
-        ]
-
-    if ods_codes or "ods" in lowered:
-        ods_list: list[str] = []
-        if ods_codes:
-            ods_list.extend(ods_codes)
-        if csv_paths:
-            ods_list.extend(csv_paths)
-        if not ods_list:
-            return None
-        return [
-            {
-                "command": "ods_to_uprn",
-                "ods": ods_list if len(ods_list) > 1 else ods_list[0],
-                "download_dir": defaults.get("download_dir"),
-                "db_url": defaults.get("db_url"),
-            }
-        ]
-
-    if uprns and (
-        "download" in lowered
-        or "assets" in lowered
-        or "point" in lowered
-        or "rgb" in lowered
-        or "image" in lowered
-        or "lidar" in lowered
-    ):
-        step: dict[str, Any] = {
-            "command": "download_assets",
-            "uprn": uprns,
-            "types": types,
-            "download_dir": download_dir or defaults.get("download_dir"),
-            "db_url": endpoint_url or defaults.get("db_url"),
-        }
-        return [step]
-
-    return None
-
-
-def llm_plan(
-    nl: str,
-    defaults: dict[str, Any],
-    base_url: str,
-    model_id: str,
-    temperature: float,
-    top_p: float,
-    num_predict: int,
-    num_ctx: int | None,
-    keep_alive: str | None,
-    force_json: bool,
-) -> list[StepSpec] | None:
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a planning assistant that compiles an ordered plan for query_assist.py.\n"
-                "Return JSON with a 'steps' array; use 'uprn_from_previous_csvs': true when a download_assets step should consume prior CSVs.\n"
-                "Types to use when implied: did:rgb-image, did:lidar-pointcloud-merged, did:lidar-pointcloud-frame, did:lidar-range-pano, did:lidar-reflectance-pano, did:lidar-signal-pano, did:lidar-nearir-pano, did:ir-false-color-image, did:ir-temperature-array, did:ir-count-image, did:celsius-temperature, did:relative-humidity."
-            ),
-        },
-        {"role": "user", "content": nl},
-    ]
+    
+def openai_chat(
+    model: str,
+    messages: list[dict[str, str]],
+    temperature: float = 0.0,
+    top_p: float = 0.95,
+    force_json: bool = True,
+    **kwargs # To catch unused ollama-specific args
+) -> dict:
+    """
+    Sends a chat request to the OpenAI API and returns the response
+    in a format consistent with ollama_chat.
+    """
     try:
-        resp = ollama_chat(
-            base_url=base_url,
-            model=model_id,
-            messages=messages,
-            temperature=temperature,
-            top_p=top_p,
-            num_predict=num_predict,
-            num_ctx=num_ctx,
-            keep_alive=keep_alive,
-            force_json=force_json,
-        )
-        content = None
-        if isinstance(resp.get("message"), dict):
-            content = resp["message"].get("content")
-        if not content and isinstance(resp.get("response"), str):
-            content = resp["response"]
-        if not content:
-            return None
-        plan_obj = None
-        try:
-            plan_obj = json.loads(content)
-        except Exception:
-            plan_obj = _extract_first_json(content)
-        if not isinstance(plan_obj, dict):
-            return None
-        steps_raw = plan_obj.get("steps")
-        if not isinstance(steps_raw, list) or not steps_raw:
-            return None
-        steps: list[StepSpec] = []
-        for s in steps_raw:
-            if not isinstance(s, dict):
-                continue
-            cmd = s.get("command")
-            if cmd not in {"download_assets", "ods_to_uprn", "uprns_by_output_area"}:
-                continue
-            step: StepSpec = {"command": cmd}
-            for key in [
-                "uprn",
-                "ods",
-                "output_area",
-                "types",
-                "sensor",
-                "download_dir",
-                "api_key_env",
-                "db_url",
-            ]:
-                if key in s:
-                    step[key] = s[key]
-            if s.get("uprn_from_previous_csvs"):
-                step["uprn_from_previous_csvs"] = True
-            if "download_dir" not in step and defaults.get("download_dir"):
-                step["download_dir"] = defaults["download_dir"]
-            steps.append(step)
-        return steps or None
-    except Exception:
-        return None
+        # The client automatically finds the OPENAI_API_KEY from your environment
+        client = OpenAI()
+        
+        request_params = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "top_p": top_p,
+        }
+        
+        # OpenAI"s method for forcing JSON output
+        if force_json:
+            request_params["response_format"] = {"type": "json_object"}
 
+        completion = client.chat.completions.create(**request_params)
+        
+        content = completion.choices[0].message.content
 
-def llm_route_to_spec(nl: str, base_url: str, model_id: str, **opts) -> StepSpec | None:
-    messages = [
-        {"role": "system", "content": SYSTEM_ROUTER_PROMPT},
-        {"role": "user", "content": nl},
-    ]
+        # IMPORTANT: We wrap the response to match the structure of ollama_chat
+        # so the rest of our code doesn"t need to change.
+        return {
+            "message": {
+                "content": content
+            }
+        }
+    except Exception as e:
+        logging.error(f"Error calling OpenAI API: {e}")
+        return {"message": {"content": ""}} # Return empty content on error
+
+def load_gazetteer(path: str = "gazetteer.json") -> dict:
+    """Loads the name-to-code mapping file."""
     try:
-        resp = ollama_chat(base_url, model_id, messages, **opts)
-    except Exception:
-        return None
-    content = None
-    if isinstance(resp.get("message"), dict):
-        content = resp["message"].get("content")
-    if not content and isinstance(resp.get("response"), str):
-        content = resp["response"]
-    if not content:
-        return None
-    obj = _extract_first_json(content) or None
-    if not obj or "command" not in obj:
-        return None
-    step: StepSpec = {
-        "command": obj["command"],
-        "uprn": obj.get("uprn"),
-        "ods": obj.get("ods"),
-        "output_area": obj.get("output_area"),
-        "sensor": obj.get("sensor"),
-        "types": obj.get("types"),
-        "download_dir": obj.get("download_dir"),
-        "api_key_env": obj.get("api_key_env"),
-        "db_url": obj.get("db_url"),
+        with open(path, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        logging.error(f"Gazetteer file not found at {path}. Geographical name matching will be disabled.")
+        return {}
+    except json.JSONDecodeError:
+        logging.error(f"Gazetteer file at {path} is not valid JSON.")
+        return {}
+    
+def process_geographical_names(config: dict, gazetteer: dict, score_cutoff: int = 85) -> dict:
+    """
+    Post-processes the LLM-generated config by resolving a list of mixed
+    geographical names into their appropriate ONS codes and categories.
+
+    It reads from config["geography"]["natural-name"], finds the best match for each
+    name across all types in the gazetteer, and then populates the config with
+    categorized codes, e.g., config["geography"]["london-borough"] = ["E09000007"].
+    """
+    if not gazetteer:
+        logging.warning("Gazetteer not loaded. Skipping geographical name resolution.")
+        return config
+
+    geography_section = config.get("geography", {})
+    if not isinstance(geography_section, dict):
+        return config
+    
+    natural_names = geography_section.get("natural-name")
+    if not isinstance(natural_names, list) or not natural_names:
+        return config
+
+    # This mapping is used to convert the gazetteer's internal keys
+    # to the final keys expected in the config.
+    relabelled_geo = {
+        "administrative-area": "london-borough",
+        "ward": "ward",
     }
-    return step
+    
+    resolved_geographies = {}
+
+    # Iterate through each name provided by the LLM.
+    for name in natural_names:
+        if not isinstance(name, str) or not name.strip():
+            continue
+
+        clean_name = name.strip().lower()
+        
+        best_overall_score = -1
+        best_overall_code = None
+        best_overall_type = None
+        best_canonical_name = None
+
+        # For each name, search across all geography types in the gazetteer.
+        for gazetteer_type, name_to_code_map in gazetteer.items():
+            if not isinstance(name_to_code_map, dict): continue
+
+            choices = list(name_to_code_map.keys())
+            if not choices: continue
+
+            match, score = process.extractOne(clean_name, choices)
+
+            if score > best_overall_score:
+                best_overall_score = score
+                best_canonical_name = match
+                best_overall_code = name_to_code_map[match]
+                best_overall_type = relabelled_geo.get(gazetteer_type, gazetteer_type)
+
+        # After checking all categories, decide if the best match is good enough.
+        if best_overall_score >= score_cutoff:
+            logging.info(
+                f"Resolved '{name}' -> '{best_canonical_name}' (type: {best_overall_type}) with score {best_overall_score}."
+            )
+            # Add the resolved code to the correct list in our results dictionary.
+            resolved_geographies.setdefault(best_overall_type, []).append(best_overall_code)
+        else:
+            logging.warning(
+                f"Could not find a confident match for '{name}'. Best attempt was '{best_canonical_name}' "
+                f"(score: {best_overall_score}, cutoff: {score_cutoff}). Ignoring."
+            )
+            
+    # Update the original config
+    if "natural-name" in geography_section:
+        del geography_section["natural-name"]
+
+    geography_section.update(resolved_geographies)
+
+    return config
 
 
-def upgrade_single_spec_to_plan(
-    nl: str, spec: StepSpec, defaults: dict[str, Any]
-) -> list[StepSpec]:
-    lowered = nl.lower()
-    types = spec.get("types") or _map_types_from_text(lowered)
-    if spec.get("command") == "uprns_by_output_area" and (
-        types
-        or "point cloud" in lowered
-        or "download" in lowered
-        or "assets" in lowered
-    ):
-        second: dict[str, Any] = {
-            "command": "download_assets",
-            "uprn_from_previous_csvs": True,
-            "download_dir": spec.get("download_dir"),
-            "db_url": spec.get("db_url"),
-        }
-        if types:
-            second["types"] = types
-        return [spec, second]
-    if spec.get("command") == "ods_to_uprn" and (types is not None):
-        return [
-            spec,
-            {
-                "command": "download_assets",
-                "uprn_from_previous_csvs": True,
-                "types": types,
-                "download_dir": spec.get("download_dir"),
-                "api_key_env": spec.get("api_key_env"),
-                "db_url": spec.get("db_url"),
-            },
-        ]
-    return [spec]
+def find_best_match(query: str, choices: list[str], score_cutoff: int = 85) -> str | None:
+    """
+    Finds the best match for a query string from a list of choices.
 
+    Args:
+        query: The string to match (e.g., "tower hamlets").
+        choices: A list of canonical names to match against.
+        score_cutoff: The minimum similarity score (0-100) to consider a match valid.
 
-def run_query_assist_step(
-    step: StepSpec, py_exe: str, qa_path: str, dry_run: bool
+    Returns:
+        The best matching choice, or None if no match exceeds the cutoff score.
+    """
+    if not query or not choices:
+        return None
+    
+    # process.extractOne returns a tuple of (best_match, score)
+    best_match, score = process.extractOne(query, choices)
+
+    if score >= score_cutoff:
+        print(f"Matched \"{query}\" to \"{best_match}\" with score {score}")
+        return best_match
+    else:
+        print(f"No confident match for \"{query}\". Best attempt \"{best_match}\" had score {score} (cutoff: {score_cutoff}).")
+        return None
+
+def run_query_assist_with_config(
+    config: dict, py_exe: str, qa_path: str, dry_run: bool
 ) -> tuple[int, str]:
-    argv = _build_argv(step, py_exe, qa_path)
+    """
+    Executes the new query_assist.py by writing the config to a temporary
+    JSON file and passing its path to the --config argument.
+    """
+    # Use a temporary file that is automatically deleted on exit
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as temp_f:
+        json.dump(config, temp_f, indent=2)
+        temp_fname = temp_f.name
+
+    argv = [py_exe, qa_path, "--config", temp_fname]
     printable = " ".join(shlex.quote(x) for x in argv)
+    logging.info("Generated Config File: %s", temp_fname)
     logging.info("Command: %s", printable)
+
     if dry_run:
+        with open(temp_fname, "r") as f:
+            content = f.read()
+            print(f"\n--- [dry-run] Config File Content ({temp_fname}) ---\n{content}\n----------------------------------------------------")
+        os.remove(temp_fname)
         return 0, f"[dry-run] {printable}\n"
 
+    # Execute the process
     p = subprocess.Popen(
         argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
     )
@@ -629,176 +535,31 @@ def run_query_assist_step(
             captured_lines.append(line)
     finally:
         rc = p.wait()
+        os.remove(temp_fname) # Always clean up the temp file
+
     return rc, "".join(captured_lines)
-
-
-def materialize_previous_uprn_csvs(state: WFState) -> list[str]:
-    from_logs = state.artifacts.get("csvs", [])
-    if from_logs:
-        return from_logs
-    dl_base = state.plan[0].get("download_dir") or os.path.join(
-        os.getcwd(), "downloads"
-    )
-    candidate = os.path.join(dl_base, "ods_to_uprn.csv")
-    if os.path.isfile(candidate):
-        return [candidate]
-    return []
-
-
-def node_plan(state: WFState) -> WFState:
-    defaults = {
-        "download_dir": None,
-        "api_key_env": "API_KEY",
-        "db_url": None,
-    }
-    # 1) LLM multi-step plan
-    plan = llm_plan(
-        state.nl,
-        defaults,
-        base_url=state.base_url,
-        model_id=state.model_id,
-        temperature=state.temperature,
-        top_p=state.top_p,
-        num_predict=state.num_predict,
-        num_ctx=state.num_ctx,
-        keep_alive=state.keep_alive,
-        force_json=state.force_json,
-    )
-    # 2) Heuristic plan
-    if not plan:
-        plan = heuristic_plan(state.nl, defaults)
-    # 3) LLM single-step → upgrade
-    if not plan:
-        spec = llm_route_to_spec(
-            state.nl,
-            base_url=state.base_url,
-            model_id=state.model_id,
-            temperature=state.temperature,
-            top_p=state.top_p,
-            num_predict=state.num_predict,
-            num_ctx=state.num_ctx,
-            keep_alive=state.keep_alive,
-            force_json=state.force_json,
-        )
-        if spec:
-            plan = upgrade_single_spec_to_plan(state.nl, spec, defaults)
-
-    # Validate required args; if invalid (e.g., output_area missing), try fallback routes
-    def _valid(p: list[StepSpec]) -> bool:
-        for st in p:
-            cmd = st.get("command")
-            if cmd == "uprns_by_output_area" and not _ensure_list_or_path(
-                st.get("output_area")
-            ):
-                return False
-            if cmd == "ods_to_uprn" and not _ensure_list_or_path(st.get("ods")):
-                return False
-            if cmd == "download_assets":
-                if st.get("uprn_from_previous_csvs"):
-                    continue
-                if not _ensure_list_or_path(st.get("uprn")):
-                    return False
-        return True
-
-    if plan and not _valid(plan):
-        plan = heuristic_plan(state.nl, defaults)
-    if plan and not _valid(plan):
-        spec = llm_route_to_spec(
-            state.nl,
-            state.base_url,
-            state.model_id,
-            temperature=state.temperature,
-            top_p=state.top_p,
-            num_predict=state.num_predict,
-            num_ctx=state.num_ctx,
-            keep_alive=state.keep_alive,
-            force_json=state.force_json,
-        )
-        if spec:
-            plan = upgrade_single_spec_to_plan(state.nl, spec, defaults)
-
-    state.plan = plan or []
-
-    if state.plan and state.verbose_level <= logging.INFO:
-        print("Plan:")
-        for i, step in enumerate(state.plan):
-            show = {k: v for k, v in step.items() if k != "uprn_from_previous_csvs"}
-            print(f"  {i+1}. {json.dumps(show, ensure_ascii=False)}")
-        print()
-    if not state.plan:
-        state.log.append("No actionable plan could be inferred.")
-    return state
-
-
-def node_execute(state: WFState) -> WFState:
-    if state.current >= len(state.plan):
-        return state
-    step = state.plan[state.current]
-
-    if step.get("uprn_from_previous_csvs"):
-        csvs = materialize_previous_uprn_csvs(state)
-        if not csvs:
-            state.log.append("No CSVs found from previous step(s).")
-            state.current = len(state.plan)
-            return state
-        step = dict(step)
-        step.pop("uprn_from_previous_csvs", None)
-        step["uprn"] = csvs
-
-    rc, captured = run_query_assist_step(
-        step, state.py_exe, state.qa_path, state.dry_run
-    )
-    state.log.append(captured)
-
-    newly_found = _find_csvs_emitted(captured)
-    if newly_found:
-        extant = state.artifacts.get("csvs", [])
-        state.artifacts["csvs"] = list(dict.fromkeys(extant + newly_found))
-
-    try:
-        argv_for_record = _build_argv(step, state.py_exe, state.qa_path)
-    except Exception:
-        argv_for_record = []
-    state.actions.append(
-        {
-            "index": state.current + 1,
-            "command": step.get("command"),
-            "argv": argv_for_record,
-            "rc": rc,
-            "emitted_csvs": newly_found,
-        }
-    )
-
-    if rc != 0:
-        state.log.append(f"Step {state.current} returned non-zero exit {rc}.")
-        state.current = len(state.plan)
-    else:
-        state.current += 1
-    return state
-
-
-def after_plan(state: WFState) -> str:
-    if not state.plan:
-        return END
-    if state.plan_only:
-        return END
-    return "execute"
-
-
-def check_done(state: WFState) -> str:
-    if state.current >= len(state.plan):
-        return END
-    if state.current >= state.max_steps:
-        state.log.append(f"Aborting: exceeded max_steps={state.max_steps}")
-        return END
-    return "execute"
-
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description="LangGraph NL workflow for query_assist.py (one- and two-stage)"
     )
+    ap.add_argument(
+        "--api", 
+        default="ollama", 
+        choices=["ollama", "openai"], 
+        help="The LLM model to use."
+    )
+    ap.add_argument(
+        "--force-llm",
+        action="store_true",
+        help="Force using the LLM even if heuristics succeed.",
+    )
     ap.add_argument("--model-id", default="gpt-oss:20b", help="Ollama model name/tag")
+    ap.add_argument(
+        "--openai-model", 
+        default="gpt-4o-mini", 
+        help="OpenAI model name (e.g., gpt-4o-mini, gpt-4-turbo)."
+    )
     ap.add_argument(
         "--query-assist-path",
         default=os.path.join(os.path.dirname(__file__), "query_assist.py"),
@@ -814,19 +575,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Plan & print commands but do not execute",
     )
-    ap.add_argument(
-        "--plan-only", action="store_true", help="Only compile/print the plan and exit"
-    )
     ap.add_argument("--once", "-q", help="Run a single NL query and exit")
 
     # Decoding/runtime knobs
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--top-p", type=float, default=0.95)
-    ap.add_argument("--num-predict", type=int, default=256)
+    ap.add_argument("--num-predict", type=int, default=512)
     ap.add_argument("--num-ctx", type=int, default=None)
     ap.add_argument("--keep-alive", default=None)
     ap.add_argument("--no-force-json", action="store_true")
-    ap.add_argument("--max-steps", type=int, default=8)
 
     # Logging controls
     ap.add_argument(
@@ -834,11 +591,40 @@ def parse_args() -> argparse.Namespace:
     )
     return ap.parse_args()
 
+def clean_empty_nodes(d: Any) -> Any:
+    """
+    Recursively removes keys from a dictionary if their value is None, [], or {}.
+    """
+    if isinstance(d, dict):
+        # Create a new dict to avoid issues with changing dict size during iteration
+        return {
+            k: clean_empty_nodes(v)
+            for k, v in d.items()
+            if v is not None and v != [] and v != {}
+        }
+    return d
+
+def is_config_sufficient_for_download(config: dict) -> bool:
+    """
+    Validates that the generated config is runnable.
+    """
+    if not config:
+        return False
+    # A query is sufficient if it has at least one identifier or geography constraint.
+    # Otherwise, it might try to download assets for the entire database.
+    has_identifier = "identifier" in config and config["identifier"]
+    has_geography = "geography" in config and config["geography"]
+
+    if not (has_identifier or has_geography):
+        logging.error("Validation failed: The query is too broad. Please specify a geography or identifier constraint, e.g., UPRN, ODS code, output area, ward, etc.")
+        return False
+
+    return True
 
 def main() -> None:
-    args = parse_args()
+    args = parse_args() 
 
-    # Logging level
+    # Configure logging
     if args.verbose >= 2:
         level = logging.DEBUG
     elif args.verbose == 1:
@@ -849,115 +635,100 @@ def main() -> None:
 
     if level <= logging.INFO:
         body = (
-            "• Parses natural language into a multi-stage plan to execute SPARQL and retrieve assets.\n"
-            "• Executes via LangGraph with artifact passing.\n"
-            "• Optional filters: sensor, types; optional overrides: download_dir, api_key_env, db_url \n"
-            "• Supports dry-run and plan-only modes."
+            "• Parses natural language into a JSON configuration.\n"
+            "• Executes query_assist.py with the generated config.\n"
+            "• Supports geographical name resolution, CSV inputs, and filters."
         )
-        print(_render_box(f"Query Assist AI — {args.model_id}", body))
+        print(_render_box(f"Query Assist NL Interface — {args.api}", body))
 
-    # Build LangGraph
-    builder = StateGraph(WFState)
-    builder.add_node("plan", node_plan)
-    builder.add_node("execute", node_execute)
-    builder.add_edge(START, "plan")
-    builder.add_conditional_edges("plan", after_plan, {"execute": "execute", END: END})
-    builder.add_conditional_edges(
-        "execute", check_done, {"execute": "execute", END: END}
-    )
-    memory = MemorySaver()
-    graph = builder.compile(checkpointer=memory)
+    def run_once(nl: str, args: argparse.Namespace):
+        gazetteer = load_gazetteer("gazetteer.json")
+        use_llm = False
+        config = None
 
-    def run_once(nl: str) -> int:
-        st = WFState(
-            nl=nl,
-            plan=[],
-            dry_run=bool(args.dry_run),
-            plan_only=bool(args.plan_only),
+        print("Interpreting your request...")
+
+        # 1. Try heuristic parsing first
+        if not args.force_llm:
+            parser = HeuristicParser(gazetteer)
+            config = parser.parse(nl)
+
+            if config is None:
+                logging.info("Heuristic check failed, falling back to LLM for complex query.")
+                use_llm = True
+        else: 
+            use_llm = True
+            logging.info("--force-llm flag detected. Skipping heuristic parser.")
+        
+        # 2. Generate the config from Natural Language
+        llm_options = {
+            "temperature": args.temperature,
+            "top_p": args.top_p,
+            "num_predict": args.num_predict,
+            "num_ctx": args.num_ctx,
+            "keep_alive": args.keep_alive,
+            "force_json": not args.no_force_json,
+        }
+        if config is None:
+            config = generate_config_from_nl(
+                nl,
+                args,
+                llm_options
+            )
+
+        if not config:
+            logging.error("Could not generate a valid configuration from your query.")
+            return 1
+        
+        # 3. Post-process the config if an LLM was used to resolve geographical names
+        if use_llm:
+            print("Resolving geographical names...")
+            processed_config = process_geographical_names(config, gazetteer)
+            logging.info(f"Processed config:\n{json.dumps(processed_config, indent=2)}")
+
+        else:
+            processed_config = config
+            logging.info(f"Heuristically generated config:\n{json.dumps(processed_config, indent=2)}")
+
+        # 4. Validate + clean the config
+        if not is_config_sufficient_for_download(processed_config):
+            logging.error("Aborting due to insufficient configuration.")
+            return 1 
+        
+        processed_config = clean_empty_nodes(processed_config)
+        logging.info(f"Cleaned config:\n{json.dumps(processed_config, indent=2)}")
+
+        # 5. Execute the script with the generated config
+        rc, output = run_query_assist_with_config(
+            processed_config,
+            py_exe=sys.executable,
             qa_path=args.query_assist_path,
-            base_url=args.base_url,
-            model_id=args.model_id,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            num_predict=args.num_predict,
-            num_ctx=args.num_ctx,
-            keep_alive=args.keep_alive,
-            force_json=(not args.no_force_json),
-            verbose_level=level,
-            max_steps=args.max_steps,
+            dry_run=args.dry_run,
         )
-        final_state = graph.invoke(
-            st, config={"configurable": {"thread_id": f"tid-{time.time_ns()}"}}
-        )
-        logs = (
-            final_state.get("log")
-            if isinstance(final_state, dict)
-            else getattr(final_state, "log", [])
-        ) or []
-        trailing = [
-            l
-            for l in logs
-            if any(
-                t in l
-                for t in (
-                    "[dry-run]",
-                    "No CSVs found",
-                    "non-zero exit",
-                    "Planner",
-                    "No actionable plan",
-                )
-            )
-        ]
-        if trailing:
-            print("\n" + "\n".join(l.strip() for l in trailing))
-        actions = (
-            final_state.get("actions")
-            if isinstance(final_state, dict)
-            else getattr(final_state, "actions", [])
-        ) or []
-        if actions and level <= logging.INFO:
-            print("\nACTIONS (LangGraph Execution):")
-            for a in actions:
-                argv = " ".join(shlex.quote(x) for x in a.get("argv", []))
-                rc = a.get("rc")
-                em = ", ".join(a.get("emitted_csvs", []) or [])
-                print(
-                    f"  {a.get('index')}. {a.get('command')}  [rc={rc}]\n      argv: {argv}"
-                )
-                if em:
-                    print(f"     emitted CSVs: {em}")
-        return 0 if not any("non-zero exit" in l for l in logs) else 1
 
-    try:
-        if args.once:
-            rc = run_once(args.once)
-            if rc != 0:
-                logging.warning("Workflow exited with code %d", rc)
-            return
-        if level <= logging.INFO:
-            print(
-                "LangGraph NL workflow for query_assist.py. Type 'exit' or Ctrl-D to quit."
-            )
+        if rc != 0:
+            logging.warning(f"Workflow exited with non-zero return code: {rc}")
+        
+        return rc
+
+    # Interactive loop or single-shot execution
+    if args.once:
+        run_once(args.once, args)
+    else:
+        print("Natural Language Interface for Query Assist. Type \"exit\" or Ctrl-D to quit.")
         while True:
             try:
-                nl = input("> ")
+                nl_query = input("> ")
+                if nl_query.strip().lower() in {"exit", "quit"}:
+                    break
+                if nl_query.strip():
+                    run_once(nl_query, args)
             except EOFError:
                 break
-            if not nl.strip():
-                continue
-            if nl.strip().lower() in {"exit", "quit"}:
+            except KeyboardInterrupt:
+                print("\nInterrupted.")
                 break
-            rc = run_once(nl)
-            if rc != 0:
-                logging.warning("Workflow exited with code %d", rc)
-    except KeyboardInterrupt:
-        print()
-        logging.info("Interrupted.")
-        sys.exit(130)
-    except Exception as e:
-        logging.error("Fatal error: %s", e)
-        sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
+

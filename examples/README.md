@@ -1,19 +1,25 @@
-# Python examples
+# Query Assist Scripts
+
+WARNING: This project is very much in its testing phase and things may not work as expected, or at all.
 
 This directory contains a few Python scripts that will load and provision the graph database with provided turtle (.ttl) files and execute queries against it. Some will also then use results from queries to download assets from the API.
 
+  * `query_assist.py`: The core script for building queries using command-line arguments.
+  * `nl_query_assist.py`: A user-friendly interface that uses an LLM to translate natural language into commands for `query_assist.py`.
+
 ## Setup
 
-### 1. Create a virtual environment
+### 1\. Create a virtual environment
 
 ```bash
-cd examples
+cd /path/to/your/scripts
 python3 -m venv venv
 ```
 
-### 2. Activate environment
+### 2\. Activate environment
 
 **macOS/Linux**
+
 ```bash
 source venv/bin/activate
 ```
@@ -24,57 +30,128 @@ source venv/bin/activate
 venv\Scripts\activate.bat
 ```
 
-**Windows (PowerShell)**
-
-```powershell
-venv\Scripts\Activate.ps1
-```
-
-### 3. Install dependencies
+### 3\. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Set your API key
+### 4\. Set your API keys
+
+You will need an API key to download assets. If you plan to use OpenAI with the Natural Language script, you will also need an OpenAI API key.
 
 **Temporary (session only)**
 
 ```bash
-export API_KEY="your_api_key"
+export API_KEY="your_asset_api_key"
+export OPENAI_API_KEY="your_openai_api_key"
 ```
 
 **Permanent (automatic when Virtualenv is activated)**
 
-If you want this variable to be automatically set every time you activate your virtual environment, add the export line to the activate script inside your virtual environment. For example (macOS/Linux):
+You can add the export lines to the `venv/bin/activate` script (for macOS/Linux) or `venv\Scripts\activate.bat` (for Windows) to set these variables automatically every time you activate your virtual environment.
 
-Open `venv/bin/activate` and add the environment variable near the bottom (but before any final `unset` lines if present).
+## Running Scripts
 
-## Running scripts
+There are two ways to query the system: the direct method using `query_assist.py` for precise control, and the natural language method using `nl_query_assist.py` for ease of use.
 
-Once your environment is set up then you can run any of the `.py` files in the `/examples` directory. **Before you run a script** verify that the constants in the file are set correctly to match your local environment.
+-----
 
-### Scripts
+## `query_assist.py` (Direct Method)
 
-Granular scripts to improve legibility when viewing the SPARQL queries:
-- `get_all_assets_for_a_list_of_uprns.py`
-- `get_all_assets_for_a_uprn.py`
-- `get_all_assets_for_a_uprn_made_by_a_sensor.py`
-- `get_all_assets_of_type_for_list_of_uprns.py`
+This is the core utility for programmatic use. It allows you to build a query by combining identifiers, geographies, property filters, and asset types. All conditions are combined with AND logic.
 
-Unified script:
-- `query_assist.py`
+The primary way to use the script is by providing a JSON configuration file via `--config`. Alternatively, you can build a query using the following granular flags:
 
-This unified script replaces and extends the above utilities by allowing you to:
+  * **`--identifier <TYPE> <VALUES...>`**: Specify properties by a known ID. Can be used multiple times.
+  * **`--geography <TYPE> <VALUES...>`**: Specify a geographical area. Can be used multiple times.
+  * **`--filter <TYPE> <VALUES...>`**: Add property or statistical data filters. Can be used multiple times.
+  * **`--sensor <IRI>`**: Filter for assets created by a specific sensor.
+  * **`--types <IRI,IRI...>`**: Filter for specific asset types.
+  * **`--ontop-url <URL>`**: The Ontop SPARQL endpoint URL for the LBSM data. **Required** if using `toid`, geography, or filter arguments.
+  * **`--db-url <URL>`**: Base graph SPARQL endpoint URL
+  * **`--download-dir <DOWNLOAD_DIR>`**: Base directory for downloads (default: ./downloads)
+  * **`--api-key-env <API_KEY_ENV>`**: Environment variable name for the API key
 
-- Specify one or more UPRNs via **`--uprn`** (space- or comma-separated), or provide a CSV file path (column `uprn`) to `--uprn`.
-- Specify one or more ODS codes via **`--ods`** (space- or comma-separated), or provide a CSV file path (column `ods`) to `--ods` for ODS→UPRN mapping.
-- Specify one or more output-area IRIs or codes via **`--output-area`**/`--oa` (space- or comma-separated), or provide a CSV file path (column `output_area`) to list UPRNs by output area.
-- Filter by **sensor** type (`--sensor`, e.g. `bess:OusterLidarSensor`).
-- Filter by **asset type** (`--types`, e.g. `did:rgb-image,did:lidar-pointcloud-merged`).
-- Override the **SPARQL endpoint** (`--db-url`).
-- Change the **download directory** (`--download-dir`).
-- Use a custom **API key** environment variable (`--api-key-env`).
+#### Supported Identifiers 
+
+  - `uprn`: The Unqiue Property Reference Number assigned to every building in the UK;
+  - `ods`: A unique identifier for organizations within the NHS and health and social care sectors in the UK;
+  - `toid`: A unique identifier assigned by the Ordnance Survey (OS) to every topographical feature in Great Britain.
+
+#### Supported Geographies
+
+  - `oa`: Output Areas (OAs), the smallest standard building blocks used by the ONS for Census data.
+  - `lsoa`: Lower layer Super Output Areas (LSOAs) are made of groups of OAs, and are used by the ONS for Census data.
+  - `ward`: Electoral wards are the spatial units used to elect local government councillors in metropolitan and non-metropolitan districts, unitary authorities and the London boroughs in England.
+  - `london-borough`: An administratve area in Greater London.
+  - `postcode`: An alphanumeric code assigned by Royal Mail as part of a postal address.
+
+#### Supported Filters
+
+##### Categorical Filters
+
+  - `property-type`: flat, house, park-home-caravan
+  - `built-form`: detached, semi-detached, end-terrace, mid-terrace
+  - `accommodation-type`: flat, semi-detached-house, detached-house, end-terraced-house, mid-terraced-house, park-home-caravan
+  - `tenure`: owner-occupied, social-housing, privately-rented
+  - `epc-rating`: AB, C, D, E, FG
+  - `potential-epc-rating`: AB, C, D, E, FG
+  - `construction-age-band`: pre-1900, 1900-1929, 1930-1949, 1950-1966, 1967-1982, 1983-1995, 1996-2011, 2012-onwards
+  - `building-use`: residential-only, mixed-use
+  - `main-heating-system`: boiler, room-storage-heaters, heat-pump, communal, none, other
+  - `main-fuel-type`: mains-gas, electricity, no-heating-system, other
+  - `wall-type`: cavity, solid, other
+  - `roof-type`: pitched, flat, room-in-roof, another-dwelling-above
+  - `glazing-type`: single-partial, secondary, double-triple
+  - `loac-supergroup`: A, B, C, D, E, F, G
+  - `loac-group`: A1, A2, A3, B1, B2, C1, C2, D1, D2, D3, E1, E2, F1, F2, G1, G2
+  - `listed-building-grade`: I, II, IIStar, Unknown
+
+Categorical filters can take any number of values from their allowed categories (as described above). For example, the following argument,
+
+> `--filter epc-rating C D`
+
+filters properties with an EPC rating of C or D.
+
+##### Boolean Filters
+
+  - `wall-insulation`
+  - `roof-insulation`
+  - `in-conservation-area`
+
+If filtering for buildings in conservation areas, the argument would looks like:
+
+> `--filter in-conservation-area true`
+
+##### Numeric Filters
+
+  - `heat-risk-quintile`: INTEGER from 1 to 5
+  - `imd19-income-decile`: INTEGER from 1 to 10
+  - `imd19-national-decile`: INTEGER from 1 to 10
+  - `epc-score`: INTEGER from 1 to 100
+  - `potential-epc-score`: INTEGER from 1 to 100
+  - `floor count`: INTEGER
+  - `basement-floor-count`: INTEGER
+  - `number-of-habitable-rooms`: INTEGER
+  - `easting`: INTEGER
+  - `northing`: INTEGER
+  - `total-floor-area`: INTEGER
+  - `energy-consumption`: INTEGER
+  - `solar-pv-area`: INTEGER
+  - `average-roof-tilt`: INTEGER
+  - `solar-pv-potential`: DECIMAL
+  - `fuel-poverty`: DECIMAL
+
+Numeric filters have two formats. If requesting a specific value, for example EPC Score 85, the argument can be entered as follows:
+
+> `--filter epc-score 85`
+
+If requesting a range of values, for example a total floor area between 100 and 200 metres squared, the argument can be entered as follows:
+
+> `--filter total-floor-area 100 200`
+
+### Supported Sensors and Asset Types
 
 #### Supported sensors
 
@@ -86,87 +163,97 @@ This unified script replaces and extends the above utilities by allowing you to:
 
 #### Supported asset types
 
-- **Merged lidar point clouds**: `did:lidar-pointcloud-merged`
-- **Pointcloud frame**: `did:lidar-pointcloud-frame`
-- **Lidar range panorama images**: `did:lidar-range-pano`
-- **Lidar reflectance for panorama**: `did:lidar-reflectance-pano`
-- **Lidar signal intensity for panoramas**: `did:lidar-signal-pano`
-- **Lidar Near Infrared for panoramas**: `did:lidar-nearir-pano`
-- **Temperature in celsius** (no contentUrl): `did:celsius-temperature`
-- **Relative humidity** (no contentUrl): `did:relative-humidity`
-- **IR false colour**: `did:ir-false-color-image`
-- **IR temperature array**: `did:ir-temperature-array`
-- **IR counts**: `did:ir-count-image`
-- **RGB image**: `did:rgb-image`
+- `did:lidar-pointcloud-merged`: **Merged lidar point clouds**
+- `did:lidar-pointcloud-frame`: **Pointcloud frame**
+- `did:lidar-range-pano`: **Lidar range panorama images**
+- `did:lidar-reflectance-pano`: **Lidar reflectance for panorama**
+- `did:lidar-signal-pano`: **Lidar signal intensity for panoramas**
+- `did:lidar-nearir-pano`: **Lidar Near Infrared for panoramas**
+- `did:celsius-temperature`: **Temperature in celsius** (no contentUrl)
+- `did:relative-humidity`: **Relative humidity** (no contentUrl)
+- `did:ir-false-color-image`: **IR false colour**
+- `did:ir-temperature-array`: **IR temperature array**
+- `did:ir-count-image`: **IR counts**
+- `did:rgb-image`: **RGB image**
 
-Pointclouds are brotli compressed .pcd files. These can be decompressed using the Brotli CLI tool
-
-```bash
-brew install brotli
-```
-
-Or using the `br_decompress.py` script.
+### `query_assist.py` Usage Examples
 
 ```bash
-python3 br_decompress.py --directory ./downloads
-```
+# Get assets for a single UPRN
+python3 query_assist.py --identifier uprn 100023334911
 
-#### `query_assist.py` Usage
+# Get assets for multiple UPRNs from a CSV file
+python3 query_assist.py --identifier uprn path/to/uprns.csv
 
-```bash
-# Single UPRN
-python3 query_assist.py --uprn 100023334911
+# Get assets for all properties in an Output Area
+python3 query_assist.py --geography output-area E00004550 --ontop-url <URL>
 
-# Multiple UPRNs (space-separated)
-python3 query_assist.py --uprn 100023334911 100023268138
-
-# Multiple UPRNs (comma-separated)
-python3 query_assist.py --uprn 100023334911, 100023268138, 46251044
-
-# CSV-only for UPRNs
-python3 query_assist.py --uprn path/to/uprns.csv
-
-# ODS→UPRN mapping with recommendation code A (accepted) I (intervention recommended)
-python3 query_assist.py --ods G85013
-
-# Output-area mode (single code)
-python3 query_assist.py --output-area E00004550
-
-# Output-area mode (multiple codes)
-python3 query_assist.py --output-area E00004550 E00032882 E00063193 E00047411
-
-# CSV-only for output-area
-python3 query_assist.py --output-area path/to/areas.csv
-
-# Sensor filter
-python3 query_assist.py --uprn 5045394 --sensor bess:OusterLidarSensor
-
-# Type filter
-python3 query_assist.py --uprn 5045394 --types did:rgb-image,did:lidar-pointcloud-merged
-
-# Custom SPARQL endpoint
-python3 query_assist.py --uprn 200003455212 --db-url http://myhost:3030/mytriplestore/query
-
-# Custom download directory
-python3 query_assist.py --uprn 5045394 --download-dir /data/assets
-
-# Custom API key env var
-export MY_KEY="..."
-python3 query_assist.py --uprn 5045394 --api-key-env MY_KEY
-
-# A Few options at once
-export MY_KEY="..."
+# Get assets for houses with owner-occupied tenure in a specific Ward
 python3 query_assist.py \
-  --uprn 200003455212,5045394 \
-  --sensor bess:OusterLidarSensor \
-  --types did:lidar-pointcloud-merged \
-  --db-url http://myhost:3030/mytriplestore/query \
-  --download-dir /mnt/data/downloads \
-  --api-key-env MY_KEY
+  --geography ward E05013561 \
+  --filter tenure owner-occupied \
+  --filter property-type house \
+  --ontop-url <URL>
+
+# Get assets with an EPC score between 50 and 75 in a specific London Borough, and filter by asset type
+python3 query_assist.py \
+  --geography london-borough E09000030 \
+  --filter epc-score 50 75 \
+  --types did:rgb-image \
+  --ontop-url <URL>
 ```
 
-Run `python3 query_assist.py -h` to see the full list of command-line options and examples.
+-----
 
+## `nl_query_assist.py` (Natural Language Method)
+
+This script provides an interface for natural language querying. It translates plain English queries into `query_assist.py` commands (via the --config commmand) and then executes it.
+
+### LLM Setup
+
+This script can use a local Ollama instance or the remote OpenAI API.
+
+  * **Ollama (Default):**
+    1.  Ensure your Ollama server is running (e.g., in a Docker container).
+    2.  Pull a model suitable for following instructions, e.g., `ollama pull llama3:8b-instruct`.
+  * **OpenAI:**
+    1.  Make sure your `OPENAI_API_KEY` environment variable is set.
+    2.  Use the `--api openai` flag when running the script.
+
+### Key Arguments
+
+  * `--api <provider>`: Choose the API provider: `ollama` (default) or `openai`.
+  * `--model-id <name>`: Specify the Ollama model to use (e.g., `llama3:8b-instruct`).
+  * `--openai-model <name>`: Specify the OpenAI model to use (e.g., `gpt-4o-mini`).
+  * `--force-llm`: Skip the fast heuristic parser and send the query directly to the LLM. Useful for very complex queries.
+  * `--dry-run`: Show the command that would be run without actually executing it.
+  * `--base-url`: Base URL of the Ollama server
+
+### `nl_query_assist.py` Usage Examples
+
+```bash
+# Start the interactive script (defaults to Ollama)
+python3 nl_query_assist.py --base-url http://ollama:11434
+
+# Start the interactive script with OpenAI
+python3 nl_query_assist.py --api openai
+```
+
+The script runs in an interactive loop. Just type your request and press Enter.
+
+**Example Queries:**
+
+> `get me assets for uprn 100023334911`
+
+> `show me rgb images for flats in camden`
+
+> `find assets for houses in islington with an epc score between 50 and 75`
+
+> `get merged lidar point clouds for properties built before 1930 without wall insulation`
+
+> `get assets for the uprns listed in ./data/my_uprns.csv`
+
+-----
 
 # Additional Data Information
 
@@ -188,7 +275,7 @@ Additionally when working with the IR data there are some assumptions to note ab
 
 ## LiDAR
 
-We have four 360 degree grey scale panormas these are:
+We have four 360 degree grey scale panoramas these are:
 
 - Near-infrared (NIR) capturing light in the near-infrared spectrum (just beyond visible light). NIR is often used to assess vegetation health, surface properties, and for capturing detailed textures in low-light conditions.
 
