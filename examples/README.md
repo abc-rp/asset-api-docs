@@ -226,5 +226,3 @@ ICP can fail, producing dense but misaligned merged clouds; use the single frame
 ## License
 
 See the root `LICENSE` file for details.
-
-
