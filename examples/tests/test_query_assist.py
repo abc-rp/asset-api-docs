@@ -69,11 +69,19 @@ class _DummyStore:
         pass
 
     def query(self, *_):
+        class _PhenomenonTime:
+            def __init__(self):
+                # fixed date for deterministic path
+                from datetime import datetime
+
+                self.value = datetime(2024, 1, 2)
+
         return [
             {
                 "uprnValue": "42",
                 "contentUrl": "https://example.com/file.bin",
                 "enum": "did:rgb-image",
+                "phenomenonTime": _PhenomenonTime(),
             }
         ]
 
@@ -81,7 +89,22 @@ class _DummyStore:
 def test_cli_download_creates_nested_dir(tmp_path, monkeypatch):
     """Full happy-path run – ensures <download-dir>/<uprn>/<type>/file.bin is created."""
     monkeypatch.setattr(qa, "SPARQLStore", _DummyStore)
-    monkeypatch.setattr(qa.httpx, "get", lambda *a, **k: _dummy_http_response())
+
+    # Mock httpx.Client context manager used in download_asset
+    class _DummyClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, *a, **k):
+            return _dummy_http_response()
+
+    monkeypatch.setattr(qa.httpx, "Client", _DummyClient)
     monkeypatch.setenv("API_KEY", "FAKE-KEY")
 
     argv = ["query_assist", "--uprn", "42", "--download-dir", str(tmp_path)]
@@ -102,12 +125,13 @@ def test_cli_download_creates_nested_dir(tmp_path, monkeypatch):
 
     qa.main()
 
-    expected = tmp_path / "42" / "rgb-image" / "file.bin"
+    # Includes date directory now (YYYY-MM-DD)
+    expected = tmp_path / "42" / "2024-01-02" / "rgb-image" / "file.bin"
     assert expected.is_file(), f"expected {expected} to exist"
 
 
-def test_cli_fails_without_api_key(monkeypatch):
-    """Main should raise RuntimeError if API_KEY env var is missing."""
+def test_cli_missing_api_key_logs_error(monkeypatch, caplog):
+    """Modern behaviour: when API key missing, log error and return without raising."""
     monkeypatch.setattr(qa, "SPARQLStore", _DummyStore)
     monkeypatch.delenv("API_KEY", raising=False)
 
@@ -125,5 +149,9 @@ def test_cli_fails_without_api_key(monkeypatch):
             api_key_env="API_KEY",
         ),
     )
-    with pytest.raises(RuntimeError, match="Env var 'API_KEY' is not set"):
-        qa.main()
+    caplog.clear()
+    qa.main()
+    assert any(
+        "API key environment variable 'API_KEY' is not set." in r.message
+        for r in caplog.records
+    ), "Expected error log for missing API key"

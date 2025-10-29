@@ -4,6 +4,7 @@ import csv
 import logging
 import os
 import re
+from datetime import datetime
 
 import httpx
 from rdflib.plugins.stores.sparqlstore import SPARQLStore
@@ -15,6 +16,7 @@ logging.basicConfig(
 
 
 def parse_args():
+    """Parses command-line arguments."""
     parser = argparse.ArgumentParser(
         description="Download assets, list UPRNs by output area, or map ODS→UPRN from a DID triplestore."
     )
@@ -41,7 +43,7 @@ def parse_args():
     )
     parser.add_argument(
         "--db-url",
-        default="http://ec2-18-175-116-201.eu-west-2.compute.amazonaws.com:3030/didtriplestore/query",
+        default="http://ec2-3-10-233-191.eu-west-2.compute.amazonaws.com:3030/mytriplestore/query",
         help="SPARQL endpoint URL",
     )
     parser.add_argument(
@@ -58,6 +60,7 @@ def parse_args():
 
 
 def load_column_from_csv(path, column):
+    """Loads a single column from a CSV file."""
     values = []
     with open(path, newline="") as cf:
         reader = csv.DictReader(cf)
@@ -82,19 +85,22 @@ def asset_subdir(enum_iri: str) -> str:
 
 
 def build_asset_query(uprn_list, args):
+    """Builds the SPARQL query to fetch asset data including phenomenon times."""
     prefixes = """
     PREFIX did:   <https://w3id.org/dob/id/>
     PREFIX dob:   <https://w3id.org/dob/voc#>
     PREFIX so:    <http://schema.org/>
     PREFIX sosa:  <http://www.w3.org/ns/sosa/>
     PREFIX prov:  <http://www.w3.org/ns/prov#>
+    PREFIX xsd:   <http://www.w3.org/2001/XMLSchema#>
     """
-    select = "SELECT DISTINCT ?uprnValue ?contentUrl ?enum\n"
+    select = "SELECT DISTINCT ?uprnValue ?contentUrl ?enum ?phenomenonTime\n"
     where = [
         "  ?res so:contentUrl ?contentUrl .",
-        "  ?res dob:typeQualifier ?enum .",  # ① now unconditional
+        "  ?res dob:typeQualifier ?enum .",
         "  ?res ( ^sosa:hasResult | ^prov:generated / prov:used )* ?obs .",
         "  ?obs a sosa:Observation ;",
+        "       sosa:phenomenonTime ?phenomenonTime ;",
         "       sosa:hasFeatureOfInterest ?foi .",
         "  ?foi so:identifier ?uprnRes .",
         "  ?uprnRes a dob:UPRNValue ; so:value ?uprnValue .",
@@ -102,15 +108,17 @@ def build_asset_query(uprn_list, args):
     if args.sensor:
         where.append(f"  ?obs sosa:madeBySensor {args.sensor} .")
 
-    quoted = ", ".join(f'"{u}"' for u in uprn_list)
-    where.append(f"  FILTER(str(?uprnValue) IN ({quoted}))")
+    quoted_uprns = ", ".join(f'"{u}"' for u in uprn_list)
+    where.append(f"  FILTER(str(?uprnValue) IN ({quoted_uprns}))")
     if args.types:
-        where.append(f"  FILTER(?enum IN ({args.types}))")
+        quoted_types = ", ".join(f"<{t.strip()}>" for t in args.types.split(","))
+        where.append(f"  FILTER(?enum IN ({quoted_types}))")
 
     return prefixes + select + "WHERE {\n" + "\n".join(where) + "\n}"
 
 
 def build_output_area_query(area_list):
+    """Builds the SPARQL query to fetch UPRNs within given output areas."""
     prefixes = """
 PREFIX spr: <http://statistics.data.gov.uk/def/spatialrelations/>
 PREFIX so:  <http://schema.org/>
@@ -129,6 +137,7 @@ PREFIX sid: <http://statistics.data.gov.uk/id/statistical-geography/>
 
 
 def build_ods_to_uprn_query(ods_list):
+    """Builds the SPARQL query to map ODS codes to UPRNs."""
     prefixes = """
 PREFIX dob: <https://w3id.org/dob/voc#>
 PREFIX so:  <http://schema.org/>
@@ -148,22 +157,34 @@ PREFIX so:  <http://schema.org/>
 
 
 def download_asset(url: str, save_dir: str, api_key: str):
+    """Downloads a single asset from a URL to a specified directory."""
     try:
-        resp = httpx.get(url, headers={"x-api-key": api_key}, timeout=120)
-        resp.raise_for_status()
-        cd = resp.headers.get("Content-Disposition", "")
-        m = re.search(r'filename="([^"]+)"', cd)
-        fn = m.group(1) if m else os.path.basename(url)
-        os.makedirs(save_dir, exist_ok=True)
-        path = os.path.join(save_dir, fn)
-        with open(path, "wb") as f:
-            f.write(resp.content)
-        logging.info(f"✔ Saved {url} → {path}")
+        with httpx.Client(timeout=120.0) as client:
+            resp = client.get(url, headers={"x-api-key": api_key})
+            resp.raise_for_status()
+
+            # Determine filename from Content-Disposition or URL
+            cd = resp.headers.get("Content-Disposition", "")
+            m = re.search(r'filename="([^"]+)"', cd)
+            fn = m.group(1) if m else os.path.basename(url)
+
+            os.makedirs(save_dir, exist_ok=True)
+            path = os.path.join(save_dir, fn)
+
+            with open(path, "wb") as f:
+                f.write(resp.content)
+            logging.info(f"✔ Saved {url} → {path}")
+
+    except httpx.HTTPStatusError as e:
+        logging.error(
+            f"✖ HTTP error downloading {url}: {e.response.status_code} - {e.response.text}"
+        )
     except Exception as e:
         logging.error(f"✖ Failed to download {url}: {e}")
 
 
 def main():
+    """Main execution function."""
     args = parse_args()
     download_base = args.download_dir or os.path.join(os.getcwd(), "downloads")
     os.makedirs(download_base, exist_ok=True)
@@ -176,11 +197,11 @@ def main():
                 ods_list.extend(load_column_from_csv(entry, "ods"))
             else:
                 ods_list.extend(o.strip() for o in entry.split(",") if o.strip())
-        ods_list = list(dict.fromkeys(ods_list))
+        ods_list = sorted(list(dict.fromkeys(ods_list)))
 
         store = SPARQLStore(query_endpoint=args.db_url, returnFormat="json")
         q = build_ods_to_uprn_query(ods_list)
-        logging.info("SPARQL query for ODS→UPRN mapping with recCodeAddress:\n%s", q)
+        logging.info("SPARQL query for ODS→UPRN mapping:\n%s", q)
         res = store.query(q)
 
         out_csv = os.path.join(download_base, "ods_to_uprn.csv")
@@ -224,7 +245,9 @@ def main():
 
         grouping = {}
         for row in res:
-            grouping.setdefault(row["outputArea"], []).append(row["uprnValue"])
+            grouping.setdefault(str(row["outputArea"]), []).append(
+                str(row["uprnValue"])
+            )
 
         for oa, uprns in grouping.items():
             name = oa.split("/")[-1]
@@ -232,7 +255,7 @@ def main():
             with open(out_csv, "w", newline="") as cf:
                 writer = csv.writer(cf)
                 writer.writerow(["uprn"])
-                for u in uprns:
+                for u in sorted(uprns):
                     writer.writerow([u])
             logging.info(f"✔ Saved CSV for {oa} → {out_csv}")
 
@@ -244,13 +267,15 @@ def main():
                 uprn_list.extend(load_column_from_csv(entry, "uprn"))
             else:
                 uprn_list.extend(u.strip() for u in entry.split(",") if u.strip())
-    uprn_list = list(dict.fromkeys(uprn_list))
+    uprn_list = sorted(list(dict.fromkeys(uprn_list)))  # Sort for consistent query
 
     if uprn_list:
         api_key = os.getenv(args.api_key_env)
         if not api_key:
-            logging.error(f"Env var {args.api_key_env!r} is not set")
-            raise RuntimeError(f"Env var {args.api_key_env!r} is not set")
+            logging.error(
+                f"API key environment variable {args.api_key_env!r} is not set."
+            )
+            return
 
         store = SPARQLStore(query_endpoint=args.db_url, returnFormat="json")
         q = build_asset_query(uprn_list, args)
@@ -258,15 +283,34 @@ def main():
         res = store.query(q)
 
         for row in res:
-            uprn_val = str(row["uprnValue"])
-            url = str(row["contentUrl"])
-            enum_iri = str(row["enum"])
-            subdir = asset_subdir(enum_iri)
+            try:
+                uprn_val = str(row["uprnValue"])
+                url = str(row["contentUrl"])
+                enum_iri = str(row["enum"])
 
-            tgt_dir = os.path.join(download_base, uprn_val, subdir)
-            logging.info(f"⤷ Downloading {url} into {tgt_dir}/")
+                phenomenon_time_obj = row["phenomenonTime"].value
+                if isinstance(phenomenon_time_obj, datetime):
+                    date_str = phenomenon_time_obj.strftime("%Y-%m-%d")
+                else:
+                    date_str = str(phenomenon_time_obj).split("T")[0]
 
-            download_asset(url, tgt_dir, api_key)
+                asset_type_subdir = asset_subdir(enum_iri)
+
+                tgt_dir = os.path.join(
+                    download_base, uprn_val, date_str, asset_type_subdir
+                )
+
+                logging.info(f"⤷ Queuing download for {url} into {tgt_dir}/")
+                download_asset(url, tgt_dir, api_key)
+
+            except KeyError as e:
+                logging.error(
+                    f"✖ Query result row was missing expected key: {e}. Row: {row}"
+                )
+            except Exception as e:
+                logging.error(
+                    f"✖ An unexpected error occurred while processing row {row}: {e}"
+                )
 
 
 if __name__ == "__main__":
