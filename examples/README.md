@@ -1,6 +1,17 @@
 # Python examples
 
-This directory contains a few Python scripts that will load and provision the graph database with provided turtle (.ttl) files and execute queries against it. Some will also then use results from queries to download assets from the API.
+This directory contains Python scripts for interacting with the DID triplestore (SPARQL endpoint) and the Asset API:
+
+1. `query_assist.py` – Structured CLI for downloading assets, listing UPRNs by output area, or mapping ODS→UPRN.
+2. `nl_query_assist.py` – Natural language (NL) wrapper that plans and executes one- or two-stage workflows using `query_assist.py` underneath.
+
+The scripts can:
+
+- Discover UPRNs by output area codes.
+- Map NHS ODS codes to UPRNs (with recommendation codes).
+- Download assets for specified UPRNs with optional sensor and asset-type filters.
+- Accept CSV file inputs for batch operations.
+- Use NL instructions (via `nl_query_assist.py`) to infer plans automatically.
 
 ## Setup
 
@@ -19,13 +30,11 @@ source venv/bin/activate
 ```
 
 **Windows (CMD)**
-
 ```bash
 venv\Scripts\activate.bat
 ```
 
 **Windows (PowerShell)**
-
 ```powershell
 venv\Scripts\Activate.ps1
 ```
@@ -39,103 +48,47 @@ pip install -r requirements.txt
 ### 4. Set your API key
 
 **Temporary (session only)**
-
 ```bash
 export API_KEY="your_api_key"
 ```
 
-**Permanent (automatic when Virtualenv is activated)**
+## Running the structured CLI (`query_assist.py`)
 
-If you want this variable to be automatically set every time you activate your virtual environment, add the export line to the activate script inside your virtual environment. For example (macOS/Linux):
+`query_assist.py` supports three modes (mutually exclusive per invocation):
 
-Open `venv/bin/activate` and add the environment variable near the bottom (but before any final `unset` lines if present).
+1. Asset download: `--uprn` (one/many or CSV path with column `uprn`)
+2. Output area → UPRN listing: `--output-area` / `--oa` (codes or CSV path column `output_area`)
+3. ODS → UPRN mapping: `--ods` (codes or CSV path column `ods`)
 
-## Running scripts
+Optional filters / overrides:
+- `--sensor bess:OusterLidarSensor` (or other supported sensor IRI)
+- `--types did:rgb-image,did:lidar-pointcloud-merged` (comma separated IRIs)
+- `--db-url http://host:3030/didtriplestore/query` (override SPARQL endpoint)
+- `--download-dir /path/to/downloads` (default `./downloads`)
+- `--api-key-env MY_KEY` (environment var containing API key; default `API_KEY`)
 
-Once your environment is set up then you can run any of the `.py` files in the `/examples` directory. **Before you run a script** verify that the constants in the file are set correctly to match your local environment.
-
-### Scripts
-
-Granular scripts to improve legibility when viewing the SPARQL queries:
-- `get_all_assets_for_a_list_of_uprns.py`
-- `get_all_assets_for_a_uprn.py`
-- `get_all_assets_for_a_uprn_made_by_a_sensor.py`
-- `get_all_assets_of_type_for_list_of_uprns.py`
-
-Unified script:
-- `query_assist.py`
-
-This unified script replaces and extends the above utilities by allowing you to:
-
-- Specify one or more UPRNs via **`--uprn`** (space- or comma-separated), or provide a CSV file path (column `uprn`) to `--uprn`.
-- Specify one or more ODS codes via **`--ods`** (space- or comma-separated), or provide a CSV file path (column `ods`) to `--ods` for ODS→UPRN mapping.
-- Specify one or more output-area IRIs or codes via **`--output-area`**/`--oa` (space- or comma-separated), or provide a CSV file path (column `output_area`) to list UPRNs by output area.
-- Filter by **sensor** type (`--sensor`, e.g. `bess:OusterLidarSensor`).
-- Filter by **asset type** (`--types`, e.g. `did:rgb-image,did:lidar-pointcloud-merged`).
-- Override the **SPARQL endpoint** (`--db-url`).
-- Change the **download directory** (`--download-dir`).
-- Use a custom **API key** environment variable (`--api-key-env`).
-
-#### Supported sensors
-
-- `bess:PhidgetHumiditySensor`
-- `bess:PhidgetTemperatureSensor`
-- `bess:OusterLidarSensor`
-- `bess:FlirOryxCamera`
-- `bess:FlirA70Camera`
-
-#### Supported asset types
-
-- **Merged lidar point clouds**: `did:lidar-pointcloud-merged`
-- **Pointcloud frame**: `did:lidar-pointcloud-frame`
-- **Lidar range panorama images**: `did:lidar-range-pano`
-- **Lidar reflectance for panorama**: `did:lidar-reflectance-pano`
-- **Lidar signal intensity for panoramas**: `did:lidar-signal-pano`
-- **Lidar Near Infrared for panoramas**: `did:lidar-nearir-pano`
-- **Temperature in celsius** (no contentUrl): `did:celsius-temperature`
-- **Relative humidity** (no contentUrl): `did:relative-humidity`
-- **IR false colour**: `did:ir-false-color-image`
-- **IR temperature array**: `did:ir-temperature-array`
-- **IR counts**: `did:ir-count-image`
-- **RGB image**: `did:rgb-image`
-
-Pointclouds are brotli compressed .pcd files. These can be decompressed using the Brotli CLI tool
+Example usages:
 
 ```bash
-brew install brotli
-```
-
-Or using the `br_decompress.py` script.
-
-```bash
-python3 br_decompress.py --directory ./downloads
-```
-
-#### `query_assist.py` Usage
-
-```bash
-# Single UPRN
+# Single UPRN asset download
 python3 query_assist.py --uprn 100023334911
 
-# Multiple UPRNs (space-separated)
+# Multiple UPRNs (space separated)
 python3 query_assist.py --uprn 100023334911 100023268138
 
-# Multiple UPRNs (comma-separated)
-python3 query_assist.py --uprn 100023334911, 100023268138, 46251044
+# Multiple UPRNs (comma separated in one argument)
+python3 query_assist.py --uprn 100023334911,100023268138,46251044
 
-# CSV-only for UPRNs
+# CSV of UPRNs
 python3 query_assist.py --uprn path/to/uprns.csv
 
-# ODS→UPRN mapping with recommendation code A (accepted) I (intervention recommended)
+# ODS→UPRN mapping
 python3 query_assist.py --ods G85013
 
-# Output-area mode (single code)
-python3 query_assist.py --output-area E00004550
-
-# Output-area mode (multiple codes)
+# Output areas → UPRN listing (mixed raw codes)
 python3 query_assist.py --output-area E00004550 E00032882 E00063193 E00047411
 
-# CSV-only for output-area
+# CSV of output areas
 python3 query_assist.py --output-area path/to/areas.csv
 
 # Sensor filter
@@ -154,7 +107,7 @@ python3 query_assist.py --uprn 5045394 --download-dir /data/assets
 export MY_KEY="..."
 python3 query_assist.py --uprn 5045394 --api-key-env MY_KEY
 
-# A Few options at once
+# Multiple options combined
 export MY_KEY="..."
 python3 query_assist.py \
   --uprn 200003455212,5045394 \
@@ -165,39 +118,113 @@ python3 query_assist.py \
   --api-key-env MY_KEY
 ```
 
-Run `python3 query_assist.py -h` to see the full list of command-line options and examples.
+Run `python3 query_assist.py -h` for full help text.
+
+## Natural language workflow (`nl_query_assist.py`)
+
+`nl_query_assist.py` lets you describe tasks conversationally; it plans steps (e.g. output-area lookup → asset download) and calls `query_assist.py` accordingly.
+
+Prerequisite: An [Ollama](https://ollama.com/) server must be running locally (or remotely) with the desired model already pulled. Set the server URL via `export OLLAMA_HOST=http://host:port` (defaults to `http://localhost:11434`). Pull a model first, e.g.:
+
+```bash
+ollama pull gpt-oss:20b
+```
+
+If you use a different model tag, pass it with `--model-id`.
+
+Key flags:
+- `--once "your NL request"` run a single NL instruction and exit.
+- `--dry-run` plan and show commands without executing downloads.
+- `--plan-only` output the inferred plan (JSON-like) and exit.
+- `--model-id gpt-oss:20b` choose Ollama model (set `OLLAMA_HOST` to change server URL).
+- Decoding knobs: `--temperature`, `--top-p`, `--num-predict`, `--num-ctx`, `--keep-alive`, `--no-force-json`.
+
+Interactive session:
+```bash
+python3 nl_query_assist.py
+> download merged lidar point clouds and rgb images for UPRNs 5045394 and 200003455212 into /tmp/assets
+```
+
+Single command:
+```bash
+python3 nl_query_assist.py --once "list UPRNs in output areas E00004550 and E00032882 then download rgb images"
+```
+
+Dry run:
+```bash
+python3 nl_query_assist.py --dry-run --once "download point clouds for ODS G85013"
+```
+
+Verbose (show planning internals):
+```bash
+python3 nl_query_assist.py -vv --once "rgb images for UPRNs in areas E00004550,E00032882"
+```
+
+## Supported sensors
+
+- `bess:PhidgetHumiditySensor`
+- `bess:PhidgetTemperatureSensor`
+- `bess:OusterLidarSensor`
+- `bess:FlirOryxCamera`
+- `bess:FlirA70Camera`
+
+## Supported asset types
+
+- Merged lidar point clouds: `did:lidar-pointcloud-merged`
+- Pointcloud frame: `did:lidar-pointcloud-frame`
+- Lidar range panorama images: `did:lidar-range-pano`
+- Lidar reflectance panorama images: `did:lidar-reflectance-pano`
+- Lidar signal intensity panorama images: `did:lidar-signal-pano`
+- Lidar Near Infrared panorama images: `did:lidar-nearir-pano`
+- Temperature in celsius (no contentUrl): `did:celsius-temperature`
+- Relative humidity (no contentUrl): `did:relative-humidity`
+- IR false colour images: `did:ir-false-color-image`
+- IR temperature arrays: `did:ir-temperature-array`
+- IR counts images: `did:ir-count-image`
+- RGB images: `did:rgb-image`
+
+Point clouds are now provided as LAZ (.laz) compressed files. Most point cloud processing tools (e.g. PDAL, CloudCompare, Potree converters) handle `.laz` directly—no manual decompression step is required.
+
+## Additional Data Information
+
+### RGB
+
+sRGB images are optimised for computer vision tasks. Vehicles and humans are masked out automatically. Please report any unmasked person or vehicle (especially number plates) to [xRI](mailto:info@xri.online).
+
+### IR
+
+Edge regions are masked due to sensor heating. In temperature arrays masked regions are NaN. Radiometric assumptions:
+
+1. Pixel distance is currently a sensible hard-coded value (dynamic derivation from LiDAR is in progress).
+2. Emissivity is assumed constant (typical building materials fall in $\epsilon \in [0.85, 0.93]$; dynamic estimation is in development).
+3. Daytime data is reflectance dominated; radiometric temperatures are only provided for night hours (1h after sunset to 1h before sunrise).
+4. Sky regions fall outside reliable radiometric interpretation and are excluded.
+
+### LiDAR
+
+Four 360° grayscale panoramas are provided:
+
+- Near-infrared (NIR): captures near-infrared spectrum for vegetation and surface texture analysis.
+- Range: distance (mm) from sensor to objects (depth map).
+- Reflectance: intensity of returned signal (material/angle dependent).
+- Signal strength: quality of LiDAR return (helps assess reliability & environmental conditions).
+
+Point cloud modalities:
+
+- Merged point cloud: dense, registered aggregate from multiple frames using Iterative Closest Point (ICP).
+- Single frame point cloud: most orthogonal frame (fallback if ICP merge is unusable).
+
+ICP can fail, producing dense but misaligned merged clouds; use the single frame as a fallback.
+
+## Troubleshooting
+
+- Missing downloads? Ensure the API key environment variable (`API_KEY` or your override) is exported in the same shell session.
+- Empty CSV outputs: Verify the codes (UPRN / ODS / Output area) exist in the triplestore and that `--db-url` is correct.
+- Slow queries: Consider filtering with `--types` and/or `--sensor` to reduce result size.
+- NL planning returns "No actionable plan": add explicit codes (e.g. UPRNs) or clarify intent ("download rgb images" vs. "rgb").
+
+## License
+
+See the root `LICENSE` file for details.
 
 
-# Additional Data Information
-
-## RGB
-
-sRGB images are provided in the API at a resolution optimised for computer vision tasks. Vehicles and humans are masked out using an automated process, if a user finds an unmasked person or vehicle (most critically the number plate), please report it to [xRI](mailto:info@xri.online).
-
-
-## IR
-
-The outermost regions of the IR images and temperature arrays have been masked out, this is due to hot edges due to the IR detector heating itself up during operation. In the temperature arrays the masked areas are NaN elements in the compressed numpy array.
-
-Additionally when working with the IR data there are some assumptions to note about the way in which radiometic temperature pixels themselves are calculated.
-
-- The formula requires the distance of each pixel from the detector, currently this is a sensible hard coded value, we are in the process of calculating these distances from the lidar.
-- Building materials tend to be in a narrow range of emissivities $\epsilon\in [0.85,0.93]$, we currently hard code a single sensible value for emissivity but are developing methods for estimating building materials dynamically.
-- During the day, we are in a reflectance dominated regime due to the influence of the sun, radiometric temperatures calculated in this regime are not reliable. Thermal data is provided for the night hours only (1 hour after sunset to 1 hour before sunrise).
-- The sky is an object outside the scope of the radiometric temperature calculation, this is a low reflectance, low emissivity regime that our radiometric temperature calculations cannot say anything meaningful about.
-
-## LiDAR
-
-We have four 360 degree grey scale panormas these are:
-
-- Near-infrared (NIR) capturing light in the near-infrared spectrum (just beyond visible light). NIR is often used to assess vegetation health, surface properties, and for capturing detailed textures in low-light conditions.
-
-- The range modality provides the distance from the LiDAR sensor to objects in the environment. Each pixel in this image represents a distance measurement in millimeters, creating a depth map of the scene.
-
-- The reflectivity image captures the intensity of the LiDAR signal that bounces back to the sensor. Reflectivity depends on the surface material and angle of incidence, making it useful for distinguishing between materials or identifying road markings, signs, and other objects.
-
-- The signal strength or return signal intensity measures the quality of the LiDAR return. Stronger signals usually indicate clearer, more reliable measurements. It can also reflect surface properties and environmental conditions.
-
-We also have two pointcloud types one is a single frame that is closest to orthogonal to the UPRN, the other is a dense, orchstrated pointcloud created by merging many pointcloud frames on either side of the most orthogonal frame using the [Iterative Closes Point (ICP) registration algorithm](http://ki-www.cvl.iis.u-tokyo.ac.jp/class2013/2013w/paper/correspondingAndRegistration/03_Levoy.pdf).
-
-ICP registration can also fail completely resulting in dense but unaligned pointclouds. The single centre frame is provided as a failback pointcloud in the event of an unusable merged pointcloud.

@@ -10,9 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Add a `CODEOWNERS` file for ownership management.
 - Add a `CHANGELOG.md` file for ckear documentation of the development of the asset-api.
+- Add `nl_query_assist.py` file for simple natural language querying.
 
 ### Changed
 - Refactor the query_assist.py output folder structure for dates of observations.
+- New triplestore endpoint.
 
 ---
 
